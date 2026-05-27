@@ -14,6 +14,9 @@ import MetricsPanel from './components/MetricsPanel';
 import TradeForm from './components/TradeForm';
 import CreateFundForm from './components/CreateFundForm';
 import ThemeToggle from './components/ThemeToggle';
+import ExposureChart from './components/ExposureChart';
+import CdiChart from './components/CdiChart';
+import ReturnByClass from './components/ReturnByClass';
 
 export default function App() {
   const { theme, toggle: toggleTheme } = useTheme();
@@ -26,6 +29,9 @@ export default function App() {
   const [batchStatus, setBatchStatus] = useState(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [view, setView] = useState('dashboard');
+  const [exposure, setExposure] = useState(null);
+  const [cdiData, setCdiData] = useState(null);
+  const [returnByClass, setReturnByClass] = useState([]);
 
   const loadFunds = useCallback(async () => {
     try {
@@ -40,16 +46,22 @@ export default function App() {
   const loadFundData = useCallback(async () => {
     if (!activeFund) return;
     try {
-      const [pos, nav, trd, met] = await Promise.all([
+      const [pos, nav, trd, met, exp, cdi, rbc] = await Promise.all([
         get(`/funds/${activeFund}/positions`),
         get(`/funds/${activeFund}/nav`),
         get(`/trades/fund/${activeFund}`),
         get(`/funds/${activeFund}/metrics`).catch(() => []),
+        get(`/funds/${activeFund}/exposure`).catch(() => null),
+        get(`/funds/${activeFund}/cdi-comparison`).catch(() => null),
+        get(`/funds/${activeFund}/return-by-class`).catch(() => []),
       ]);
       setPositions(pos);
       setNavData(nav);
       setTrades(trd);
       setMetrics(met);
+      setExposure(exp);
+      setCdiData(cdi);
+      setReturnByClass(rbc);
     } catch (e) {
       console.error('Erro ao carregar dados do fundo:', e);
     }
@@ -189,8 +201,17 @@ export default function App() {
               <Section title="Patrimonio (NAV)">
                 <NavChart navData={navData} />
               </Section>
-              <Section title="Valor da Cota">
-                <ShareChart navData={navData} />
+              <Section title="Fundo vs CDI">
+                <CdiChart cdiData={cdiData} />
+              </Section>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+              <Section title="Exposicao">
+                <ExposureChart exposure={exposure} />
+              </Section>
+              <Section title="Retorno por Classe">
+                <ReturnByClass data={returnByClass} />
               </Section>
             </div>
 
