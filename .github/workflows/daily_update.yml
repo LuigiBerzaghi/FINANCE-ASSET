@@ -1,0 +1,41 @@
+name: Daily Price Update
+
+on:
+  schedule:
+    # 21:00 UTC = 18:00 BRT (horário de Brasília)
+    - cron: '0 21 * * 1-5'  # Seg-Sex apenas
+  workflow_dispatch:  # Permite rodar manualmente
+
+jobs:
+  update-prices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore src/PUCFinance.AssetManagement/PUCFinance.AssetManagement.csproj
+
+      - name: Build
+        run: dotnet build src/PUCFinance.AssetManagement/PUCFinance.AssetManagement.csproj --no-restore
+
+      # Roda o batch via um script dedicado (não sobe a API inteira)
+      - name: Run daily batch
+        run: |
+          dotnet run --project src/PUCFinance.AssetManagement -- --batch
+        env:
+          DOTNET_ENVIRONMENT: Production
+
+      # Commita o banco atualizado de volta pro repo
+      - name: Commit updated database
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add database/pucfinance.db
+          git diff --cached --quiet || git commit -m "batch: daily price update $(date -u +%Y-%m-%d)"
+          git push
