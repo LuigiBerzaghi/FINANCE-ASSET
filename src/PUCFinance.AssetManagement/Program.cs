@@ -1,12 +1,23 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
 using PUCFinance.AssetManagement.Data;
 using PUCFinance.AssetManagement.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ── Database ────────────────────────────────────────────
-var dbPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "database", "pucfinance.db");
-dbPath = Path.GetFullPath(dbPath);
+// Railway: usa /data/pucfinance.db (volume persistente)
+// Local: usa database/pucfinance.db relativo ao projeto
+string dbPath;
+if (Environment.GetEnvironmentVariable("RAILWAY_ENVIRONMENT") != null)
+{
+    dbPath = "/data/pucfinance.db";
+}
+else
+{
+    dbPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "database", "pucfinance.db");
+    dbPath = Path.GetFullPath(dbPath);
+}
 
 Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
 
@@ -31,16 +42,18 @@ builder.Services.AddSwaggerGen(c =>
     c.SwaggerDoc("v1", new() { Title = "PUC Finance - Asset Management", Version = "v1" });
 });
 
-// ── CORS (React dev server) ─────────────────────────────
+// ── CORS ────────────────────────────────────────────────
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("DevCors", policy =>
+    options.AddPolicy("AllowAll", policy =>
     {
-        policy.WithOrigins("http://localhost:3000", "http://localhost:5173")
-              .AllowAnyMethod()
-              .AllowAnyHeader();
+        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
     });
 });
+
+// ── Railway: porta dinâmica ─────────────────────────────
+var port = Environment.GetEnvironmentVariable("PORT") ?? "5000";
+builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
 var app = builder.Build();
 
@@ -55,7 +68,15 @@ using (var scope = app.Services.CreateScope())
 app.UseSwagger();
 app.UseSwaggerUI();
 
-app.UseCors("DevCors");
+app.UseCors("AllowAll");
+
+// Serve o frontend buildado (wwwroot/)
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.MapControllers();
+
+// Fallback: qualquer rota que nao seja /api vai pro index.html do React
+app.MapFallbackToFile("index.html");
 
 app.Run();

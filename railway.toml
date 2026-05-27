@@ -1,0 +1,7 @@
+[build]
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/api/funds"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
