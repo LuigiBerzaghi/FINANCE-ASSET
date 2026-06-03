@@ -451,21 +451,31 @@ public class AssetsController : ControllerBase
 public class TradesController : ControllerBase
 {
     private readonly TradeService _tradeService;
+    private readonly BatchService _batchService;
     private readonly AppDbContext _db;
 
-    public TradesController(TradeService tradeService, AppDbContext db)
+    public TradesController(TradeService tradeService, BatchService batchService, AppDbContext db)
     {
         _tradeService = tradeService;
+        _batchService = batchService;
         _db = db;
     }
 
-    /// <summary>POST /api/trades — Executa um trade</summary>
+    /// <summary>POST /api/trades — Executa um trade (preco buscado automaticamente)</summary>
     [HttpPost]
     public async Task<ActionResult<Trade>> Execute([FromBody] ExecuteTradeRequest request)
     {
         try
         {
             var trade = await _tradeService.ExecuteTradeAsync(request);
+
+            // Roda batch automatico depois do trade
+            _ = Task.Run(async () =>
+            {
+                try { await _batchService.RunDailyUpdateAsync(); }
+                catch { /* batch falhar nao deve impedir o trade */ }
+            });
+
             return CreatedAtAction(nameof(GetByFund), new { fundId = trade.FundId }, trade);
         }
         catch (Exception ex)
@@ -474,7 +484,22 @@ public class TradesController : ControllerBase
         }
     }
 
-    /// <summary>GET /api/trades/fund/{fundId} — Histórico de trades de um fundo</summary>
+    /// <summary>DELETE /api/trades/{id} — Deleta um trade e reverte posicao/caixa</summary>
+    [HttpDelete("{id}")]
+    public async Task<ActionResult> Delete(int id)
+    {
+        try
+        {
+            await _tradeService.DeleteTradeAsync(id);
+            return Ok(new { message = "Trade deletado com sucesso" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>GET /api/trades/fund/{fundId} — Historico de trades de um fundo</summary>
     [HttpGet("fund/{fundId}")]
     public async Task<ActionResult<List<TradeResponse>>> GetByFund(int fundId)
     {
@@ -510,3 +535,27 @@ public class BatchController : ControllerBase
         return Ok(result);
     }
 }
+// ════════════════════════════════════════════════════════
+// PRICES (consulta de preco atual)
+// ════════════════════════════════════════════════════════
+
+[ApiController]
+[Route("api/[controller]")]
+public class PricesController : ControllerBase
+{
+    private readonly PricingService _pricing;
+
+    public PricesController(PricingService pricing) => _pricing = pricing;
+
+    /// <summary>GET /api/prices/current/{ticker} — Preco atual de um ticker</summary>
+    [HttpGet("current/{ticker}")]
+    public async Task<ActionResult> GetCurrentPrice(string ticker)
+    {
+        var price = await _pricing.GetLatestPriceAsync(ticker.Trim().ToUpper());
+        if (price == null)
+            return NotFound(new { error = $"Preco nao encontrado para {ticker}" });
+
+        return Ok(new { ticker = ticker.Trim().ToUpper(), price = price.Value });
+    }
+}
+

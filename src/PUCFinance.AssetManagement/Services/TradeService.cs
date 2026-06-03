@@ -19,50 +19,49 @@ public class TradeService
     }
 
     /// <summary>
-    /// Executa um trade: registra no log, atualiza posição e caixa.
+    /// Executa um trade: busca preco atual, registra no log, atualiza posicao e caixa.
     /// </summary>
     public async Task<Trade> ExecuteTradeAsync(ExecuteTradeRequest request)
     {
-        // Validações
         var fund = await _db.Funds.FindAsync(request.FundId)
-            ?? throw new InvalidOperationException($"Fundo {request.FundId} não encontrado");
+            ?? throw new InvalidOperationException($"Fundo {request.FundId} nao encontrado");
 
         if (request.Quantity <= 0)
             throw new ArgumentException("Quantidade deve ser positiva");
 
-        if (request.Price <= 0)
-            throw new ArgumentException("Preço deve ser positivo");
-
         if (request.Side is not ("long" or "short"))
             throw new ArgumentException("Side deve ser 'long' ou 'short'");
 
-        var cash = await _db.Cash.FindAsync(request.FundId)
-            ?? throw new InvalidOperationException($"Registro de caixa não encontrado para fundo {request.FundId}");
+        // Busca preco atual do Yahoo Finance
+        var price = await _pricing.GetLatestPriceAsync(request.Ticker.Trim().ToUpper());
+        if (price == null || price <= 0)
+            throw new InvalidOperationException($"Nao foi possivel obter preco para {request.Ticker}. Verifique se o ticker esta correto.");
 
-        // Custo do trade
-        // Long (compra) = gasta caixa | Short (venda a descoberto) = recebe caixa
+        var cash = await _db.Cash.FindAsync(request.FundId)
+            ?? throw new InvalidOperationException($"Registro de caixa nao encontrado para fundo {request.FundId}");
+
         var signedQuantity = request.Side == "long" ? request.Quantity : -request.Quantity;
-        var cashImpact = -(signedQuantity * request.Price); // compra: negativo, short: positivo
+        var cashImpact = -(signedQuantity * price.Value);
 
         if (cash.Balance + cashImpact < 0)
             throw new InvalidOperationException(
-                $"Caixa insuficiente. Disponível: {cash.Balance:N2}, necessário: {-cashImpact:N2}");
+                $"Caixa insuficiente. Disponivel: {cash.Balance:N2}, necessario: {-cashImpact:N2}");
 
-        // 1. Registra o trade (log imutável)
+        // 1. Registra o trade
         var trade = new Trade
         {
             FundId = request.FundId,
             Ticker = request.Ticker.Trim().ToUpper(),
             Side = request.Side,
             Quantity = request.Quantity,
-            Price = request.Price,
+            Price = price.Value,
             Thesis = request.Thesis,
             ExecutedBy = request.ExecutedBy
         };
         _db.Trades.Add(trade);
 
-        // 2. Atualiza posição
-        await UpdatePositionAsync(request.FundId, trade.Ticker, signedQuantity, request.Price, request.Side);
+        // 2. Atualiza posicao
+        await UpdatePositionAsync(request.FundId, trade.Ticker, signedQuantity, price.Value, request.Side);
 
         // 3. Atualiza caixa
         cash.Balance += cashImpact;
@@ -71,16 +70,68 @@ public class TradeService
         await _db.SaveChangesAsync();
 
         _logger.LogInformation(
-            "Trade executado: {Side} {Qty} {Ticker} @ {Price} | Fundo: {Fund} | Tese: {Thesis}",
-            request.Side, request.Quantity, trade.Ticker, request.Price, fund.Name, request.Thesis);
+            "Trade executado: {Side} {Qty} {Ticker} @ {Price} (auto) | Fundo: {Fund} | Tese: {Thesis}",
+            request.Side, request.Quantity, trade.Ticker, price.Value, fund.Name, request.Thesis);
 
         return trade;
     }
 
     /// <summary>
-    /// Atualiza a posição existente ou cria uma nova.
-    /// Trata: abertura, aumento, redução e fechamento de posição.
+    /// Deleta um trade e reverte a posicao e o caixa.
     /// </summary>
+    public async Task DeleteTradeAsync(int tradeId)
+    {
+        var trade = await _db.Trades.FindAsync(tradeId)
+            ?? throw new InvalidOperationException($"Trade {tradeId} nao encontrado");
+
+        var cash = await _db.Cash.FindAsync(trade.FundId)
+            ?? throw new InvalidOperationException($"Caixa nao encontrado para fundo {trade.FundId}");
+
+        // Reverte o impacto no caixa
+        var signedQuantity = trade.Side == "long" ? trade.Quantity : -trade.Quantity;
+        var cashImpact = -(signedQuantity * trade.Price);
+        cash.Balance -= cashImpact; // inverte o impacto original
+        cash.UpdatedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+
+        // Reverte a posicao
+        var position = await _db.Positions
+            .FirstOrDefaultAsync(p => p.FundId == trade.FundId && p.Ticker == trade.Ticker);
+
+        if (position != null)
+        {
+            var reverseQuantity = trade.Side == "long" ? -trade.Quantity : trade.Quantity;
+            var newQuantity = position.Quantity + reverseQuantity;
+
+            if (Math.Abs(newQuantity) < 0.0001)
+            {
+                _db.Positions.Remove(position);
+            }
+            else
+            {
+                position.Quantity = newQuantity;
+                position.Side = newQuantity > 0 ? "long" : "short";
+                // Preco medio nao eh perfeito ao reverter, mas eh o melhor que da pra fazer
+                position.UpdatedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+            }
+        }
+
+        // Remove P&L realizado associado (se houver)
+        var relatedPnl = await _db.RealizedPnl
+            .Where(r => r.FundId == trade.FundId && r.Ticker == trade.Ticker
+                && r.ClosedAt == trade.ExecutedAt)
+            .ToListAsync();
+        _db.RealizedPnl.RemoveRange(relatedPnl);
+
+        // Remove o trade
+        _db.Trades.Remove(trade);
+
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "Trade deletado: {Side} {Qty} {Ticker} @ {Price} | Fundo: {FundId}",
+            trade.Side, trade.Quantity, trade.Ticker, trade.Price, trade.FundId);
+    }
+
     private async Task UpdatePositionAsync(int fundId, string ticker, double signedQuantity, double price, string side)
     {
         var position = await _db.Positions
@@ -88,7 +139,6 @@ public class TradeService
 
         if (position == null)
         {
-            // Nova posição
             _db.Positions.Add(new Position
             {
                 FundId = fundId,
@@ -103,7 +153,6 @@ public class TradeService
         var oldQuantity = position.Quantity;
         var newQuantity = oldQuantity + signedQuantity;
 
-        // Fechando ou reduzindo posição? Registra P&L realizado
         if (Math.Sign(oldQuantity) != Math.Sign(signedQuantity))
         {
             var closedQuantity = Math.Min(Math.Abs(signedQuantity), Math.Abs(oldQuantity));
@@ -125,12 +174,10 @@ public class TradeService
 
         if (Math.Abs(newQuantity) < 0.0001)
         {
-            // Posição zerada
             _db.Positions.Remove(position);
         }
         else if (Math.Sign(newQuantity) == Math.Sign(oldQuantity))
         {
-            // Aumentando posição → recalcula preço médio
             position.AvgPrice = ((Math.Abs(oldQuantity) * position.AvgPrice) +
                                  (Math.Abs(signedQuantity) * price)) /
                                 (Math.Abs(oldQuantity) + Math.Abs(signedQuantity));
@@ -138,7 +185,6 @@ public class TradeService
         }
         else
         {
-            // Invertendo posição (fechou e abriu no outro lado)
             position.Quantity = newQuantity;
             position.AvgPrice = price;
             position.Side = newQuantity > 0 ? "long" : "short";

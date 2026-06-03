@@ -1,11 +1,26 @@
 import { fmtBRL, fmtQty } from '../lib/format';
 
-export default function TradesTable({ trades }) {
+export default function TradesTable({ trades, onDelete }) {
   if (!trades?.length) {
     return <div style={{ color: 'var(--text-muted)', padding: 20 }}>Nenhum trade registrado</div>;
   }
 
-  const headers = ['Data', 'Ticker', 'Side', 'Qtd', 'Preço', 'Tese', 'Gestor'];
+  const headers = ['Data', 'Ticker', 'Side', 'Qtd', 'Preco', 'Tese', 'Gestor', ''];
+
+  const handleDelete = async (id, ticker) => {
+    if (!confirm(`Deletar trade de ${ticker}? Isso reverte a posicao e o caixa.`)) return;
+    try {
+      const r = await fetch(`/api/trades/${id}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const data = await r.json();
+        alert(data.error || 'Erro ao deletar');
+        return;
+      }
+      onDelete?.();
+    } catch (e) {
+      alert('Erro ao deletar: ' + e.message);
+    }
+  };
 
   return (
     <div style={{ overflowX: 'auto', maxHeight: 360, overflowY: 'auto' }}>
@@ -83,6 +98,27 @@ export default function TradesTable({ trades }) {
               </td>
               <td style={{ padding: '8px 10px', color: 'var(--text-dim)' }}>
                 {t.executedBy || '—'}
+              </td>
+              <td style={{ padding: '8px 10px', textAlign: 'center' }}>
+                <button
+                  onClick={() => handleDelete(t.id, t.ticker)}
+                  style={{
+                    padding: '3px 8px',
+                    borderRadius: 3,
+                    border: '1px solid var(--red)',
+                    background: 'transparent',
+                    color: 'var(--red)',
+                    fontSize: 10,
+                    cursor: 'pointer',
+                    fontWeight: 600,
+                    opacity: 0.7,
+                    transition: 'opacity 0.15s',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
+                  onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
+                >
+                  Deletar
+                </button>
               </td>
             </tr>
           ))}

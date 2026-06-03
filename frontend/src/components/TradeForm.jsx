@@ -1,14 +1,31 @@
 import { useState } from 'react';
-import { post } from '../lib/api';
+import { post, get } from '../lib/api';
 import { fmtBRL } from '../lib/format';
 
 export default function TradeForm({ funds, onSubmit }) {
   const [form, setForm] = useState({
-    fundId: '', ticker: '', side: 'long', quantity: '', price: '', thesis: '', executedBy: '',
+    fundId: '', ticker: '', side: 'long', quantity: '', thesis: '', executedBy: '',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [currentPrice, setCurrentPrice] = useState(null);
+  const [priceLoading, setPriceLoading] = useState(false);
+
+  const fetchPrice = async (ticker) => {
+    if (!ticker || ticker.trim().length < 2) {
+      setCurrentPrice(null);
+      return;
+    }
+    setPriceLoading(true);
+    try {
+      const data = await get(`/prices/current/${ticker.trim().toUpperCase()}`);
+      setCurrentPrice(data.price);
+    } catch {
+      setCurrentPrice(null);
+    }
+    setPriceLoading(false);
+  };
 
   const handleSubmit = async () => {
     setError(null);
@@ -20,17 +37,17 @@ export default function TradeForm({ funds, onSubmit }) {
         ticker: form.ticker.trim().toUpperCase(),
         side: form.side,
         quantity: parseFloat(form.quantity),
-        price: parseFloat(form.price),
         thesis: form.thesis || null,
         executedBy: form.executedBy || null,
       };
-      if (!payload.fundId || !payload.ticker || !payload.quantity || !payload.price) {
-        throw new Error('Preencha fundo, ticker, quantidade e preco');
+      if (!payload.fundId || !payload.ticker || !payload.quantity) {
+        throw new Error('Preencha fundo, ticker e quantidade');
       }
-      await post('/trades', payload);
-      setSuccess(`Trade executado: ${payload.side.toUpperCase()} ${payload.quantity} ${payload.ticker} @ ${fmtBRL(payload.price)}`);
-      setForm((f) => ({ ...f, ticker: '', quantity: '', price: '', thesis: '' }));
-      onSubmit?.();
+      const trade = await post('/trades', payload);
+      setSuccess(`Trade executado: ${payload.side.toUpperCase()} ${payload.quantity} ${payload.ticker} @ R$${trade.price?.toFixed(2) || '?'}`);
+      setForm((f) => ({ ...f, ticker: '', quantity: '', thesis: '' }));
+      setCurrentPrice(null);
+      setTimeout(() => onSubmit?.(), 2000);
     } catch (e) {
       setError(e.message);
     }
@@ -73,7 +90,16 @@ export default function TradeForm({ funds, onSubmit }) {
       <div>
         <label style={labelStyle}>Ticker</label>
         <input style={inputStyle} placeholder="PETR4" value={form.ticker}
-          onChange={(e) => setForm((f) => ({ ...f, ticker: e.target.value }))} />
+          onChange={(e) => setForm((f) => ({ ...f, ticker: e.target.value }))}
+          onBlur={(e) => fetchPrice(e.target.value)} />
+        {priceLoading && (
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>Buscando preco...</div>
+        )}
+        {currentPrice && !priceLoading && (
+          <div style={{ fontSize: 12, color: 'var(--green)', marginTop: 4, fontWeight: 600 }}>
+            Preco atual: {fmtBRL(currentPrice)}
+          </div>
+        )}
       </div>
       <div>
         <label style={labelStyle}>Side</label>
@@ -95,11 +121,11 @@ export default function TradeForm({ funds, onSubmit }) {
         <label style={labelStyle}>Quantidade</label>
         <input style={inputStyle} type="number" placeholder="100" value={form.quantity}
           onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} />
-      </div>
-      <div>
-        <label style={labelStyle}>Preco</label>
-        <input style={inputStyle} type="number" step="0.01" placeholder="38.50" value={form.price}
-          onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} />
+        {currentPrice && form.quantity && (
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
+            Custo estimado: {fmtBRL(currentPrice * parseFloat(form.quantity || 0))}
+          </div>
+        )}
       </div>
       <div>
         <label style={labelStyle}>Gestor</label>
@@ -111,19 +137,21 @@ export default function TradeForm({ funds, onSubmit }) {
         <input style={inputStyle} placeholder="Justificativa do trade..." value={form.thesis}
           onChange={(e) => setForm((f) => ({ ...f, thesis: e.target.value }))} />
       </div>
-      <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 12, alignItems: 'center' }}>
-        <button onClick={handleSubmit} disabled={loading}
-          style={{
-            padding: '10px 24px', borderRadius: 4, border: 'none', cursor: loading ? 'wait' : 'pointer',
-            background: 'var(--accent-solid)', color: '#fff', fontWeight: 700, fontSize: 13,
-            textTransform: 'uppercase', letterSpacing: '0.05em',
-            opacity: loading ? 0.6 : 1,
-            transition: 'background 0.2s',
-          }}>
-          {loading ? 'Executando...' : 'Executar Trade'}
-        </button>
-        {error && <span style={{ color: 'var(--red)', fontSize: 12 }}>{error}</span>}
-        {success && <span style={{ color: 'var(--green)', fontSize: 12 }}>{success}</span>}
+      <div style={{ gridColumn: '1 / -1' }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <button onClick={handleSubmit} disabled={loading}
+            style={{
+              padding: '10px 24px', borderRadius: 4, border: 'none', cursor: loading ? 'wait' : 'pointer',
+              background: 'var(--accent-solid)', color: '#fff', fontWeight: 700, fontSize: 13,
+              textTransform: 'uppercase', letterSpacing: '0.05em',
+              opacity: loading ? 0.6 : 1,
+              transition: 'background 0.2s',
+            }}>
+            {loading ? 'Buscando preco e executando...' : 'Executar Trade'}
+          </button>
+          {error && <span style={{ color: 'var(--red)', fontSize: 12 }}>{error}</span>}
+          {success && <span style={{ color: 'var(--green)', fontSize: 12 }}>{success}</span>}
+        </div>
       </div>
     </div>
   );

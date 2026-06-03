@@ -242,7 +242,7 @@ export default function App() {
             )}
 
             <Section title="Historico de Trades">
-              <TradesTable trades={trades} />
+              <TradesTable trades={trades} onDelete={() => { loadFunds(); loadFundData(); }} />
             </Section>
           </div>
         )}
@@ -254,7 +254,7 @@ export default function App() {
               <TradeForm funds={funds} onSubmit={() => { loadFunds(); loadFundData(); }} />
             </Section>
             <Section title="Trades Recentes">
-              <TradesTable trades={trades} />
+              <TradesTable trades={trades} onDelete={() => { loadFunds(); loadFundData(); }} />
             </Section>
           </div>
         )}

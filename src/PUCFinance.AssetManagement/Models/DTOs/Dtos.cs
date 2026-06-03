@@ -14,7 +14,6 @@ public record ExecuteTradeRequest(
     string Ticker,
     string Side,        // "long" ou "short"
     double Quantity,
-    double Price,
     string? Thesis,
     string? ExecutedBy
 );
