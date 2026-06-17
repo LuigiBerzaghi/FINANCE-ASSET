@@ -6,7 +6,33 @@ public record CreateFundRequest(
     string Name,
     string? Strategy,
     double InitialCapital = 1_000_000,
-    double TotalShares = 1_000_000
+    double TotalShares = 1_000_000,
+    int? TeamId = null
+);
+
+public record LoginRequest(
+    string Email,
+    string Password
+);
+
+public record AuthResponse(
+    string Token,
+    string ExpiresAt,
+    AuthUserResponse User
+);
+
+public record AuthUserResponse(
+    int Id,
+    string Name,
+    string Email,
+    string Role,
+    int? TeamId,
+    string? TeamName
+);
+
+public record TeamResponse(
+    int Id,
+    string Name
 );
 
 public record ExecuteTradeRequest(
@@ -24,6 +50,8 @@ public record FundSummaryResponse(
     int Id,
     string Name,
     string? Strategy,
+    int? TeamId,
+    string? TeamName,
     double TotalEquity,
     double ShareValue,
     double DailyReturn,

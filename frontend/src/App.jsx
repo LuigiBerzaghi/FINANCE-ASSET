@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { get, post } from './lib/api';
+import { clearAuthToken, download, get, getAuthToken, post } from './lib/api';
 import { fmtBRL, fmtPct, fmtNum } from './lib/format';
 import { useTheme } from './lib/useTheme';
 import Section from './components/Section';
@@ -17,10 +17,14 @@ import ThemeToggle from './components/ThemeToggle';
 import ExposureChart from './components/ExposureChart';
 import CdiChart from './components/CdiChart';
 import ReturnByClass from './components/ReturnByClass';
+import LoginForm from './components/LoginForm';
 
 export default function App() {
   const { theme, toggle: toggleTheme } = useTheme();
+  const [authReady, setAuthReady] = useState(false);
+  const [authUser, setAuthUser] = useState(null);
   const [funds, setFunds] = useState([]);
+  const [teams, setTeams] = useState([]);
   const [activeFund, setActiveFund] = useState(null);
   const [positions, setPositions] = useState([]);
   const [navData, setNavData] = useState([]);
@@ -37,11 +41,13 @@ export default function App() {
     try {
       const data = await get('/funds');
       setFunds(data);
-      if (data.length && !activeFund) setActiveFund(data[0].id);
+      setActiveFund((current) => (
+        data.some((fund) => fund.id === current) ? current : (data[0]?.id ?? null)
+      ));
     } catch (e) {
       console.error('Erro ao carregar fundos:', e);
     }
-  }, [activeFund]);
+  }, []);
 
   const loadFundData = useCallback(async () => {
     if (!activeFund) return;
@@ -67,7 +73,49 @@ export default function App() {
     }
   }, [activeFund]);
 
-  useEffect(() => { loadFunds(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+
+    const restoreSession = async () => {
+      if (!getAuthToken()) {
+        setAuthReady(true);
+        return;
+      }
+
+      try {
+        const user = await get('/auth/me');
+        if (!cancelled) setAuthUser(user);
+      } catch {
+        clearAuthToken();
+      } finally {
+        if (!cancelled) setAuthReady(true);
+      }
+    };
+
+    restoreSession();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!authUser) {
+      setFunds([]);
+      setActiveFund(null);
+      return;
+    }
+
+    loadFunds();
+  }, [authUser, loadFunds]);
+
+  useEffect(() => {
+    if (authUser?.role !== 'leader') {
+      setTeams([]);
+      if (view === 'funds') setView('dashboard');
+      return;
+    }
+
+    get('/teams').then(setTeams).catch(() => setTeams([]));
+  }, [authUser, view]);
+
   useEffect(() => { loadFundData(); }, [activeFund, loadFundData]);
 
   const runBatch = async () => {
@@ -86,9 +134,51 @@ export default function App() {
 
   const exportExcel = () => {
     if (!activeFund) return;
-    window.open(`/api/funds/${activeFund}/export`, '_blank');
+    download(`/funds/${activeFund}/export`)
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const fundName = currentFund?.name || 'fundo';
+        link.href = url;
+        link.download = `PUCFinance_${fundName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      })
+      .catch((e) => setBatchStatus({ status: `error: ${e.message}` }));
   };
 
+  const logout = () => {
+    clearAuthToken();
+    setAuthUser(null);
+    setTeams([]);
+    setFunds([]);
+    setActiveFund(null);
+    setView('dashboard');
+  };
+
+  if (!authReady) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: 'var(--bg)',
+        color: 'var(--text-muted)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 13,
+      }}>
+        Carregando...
+      </div>
+    );
+  }
+
+  if (!authUser) {
+    return <LoginForm onLogin={setAuthUser} />;
+  }
+
+  const isLeader = authUser.role === 'leader';
   const currentFund = funds.find((f) => f.id === activeFund);
 
   const allocationData = positions
@@ -118,7 +208,7 @@ export default function App() {
           <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>ASSET MANAGEMENT</span>
         </div>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          {['dashboard', 'trade', 'funds'].map((v) => (
+          {(isLeader ? ['dashboard', 'trade', 'funds'] : ['dashboard', 'trade']).map((v) => (
             <button key={v} onClick={() => setView(v)}
               style={{
                 padding: '6px 14px', borderRadius: 4, border: 'none', cursor: 'pointer',
@@ -130,17 +220,19 @@ export default function App() {
               }}>{v === 'funds' ? 'Fundos' : v === 'trade' ? 'Trade' : 'Dashboard'}</button>
           ))}
           <div style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 8px' }} />
-          <button onClick={runBatch} disabled={batchLoading}
-            style={{
-              padding: '6px 14px', borderRadius: 4, border: '1px solid var(--border)',
-              background: 'transparent',
-              color: batchLoading ? 'var(--text-dim)' : 'var(--yellow)',
-              cursor: batchLoading ? 'wait' : 'pointer',
-              fontSize: 12, fontWeight: 600,
-            }}>
-            {batchLoading ? 'Atualizando...' : 'Run Batch'}
-          </button>
-          {activeFund && (
+          {isLeader && (
+            <button onClick={runBatch} disabled={batchLoading}
+              style={{
+                padding: '6px 14px', borderRadius: 4, border: '1px solid var(--border)',
+                background: 'transparent',
+                color: batchLoading ? 'var(--text-dim)' : 'var(--yellow)',
+                cursor: batchLoading ? 'wait' : 'pointer',
+                fontSize: 12, fontWeight: 600,
+              }}>
+              {batchLoading ? 'Atualizando...' : 'Run Batch'}
+            </button>
+          )}
+          {isLeader && activeFund && (
             <button onClick={exportExcel}
               style={{
                 padding: '6px 14px', borderRadius: 4, border: '1px solid var(--border)',
@@ -153,6 +245,17 @@ export default function App() {
             </button>
           )}
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <div style={{ color: 'var(--text-dim)', fontSize: 11, marginLeft: 8 }}>
+            {authUser.name}{authUser.teamName ? ` | ${authUser.teamName}` : ' | Lider'}
+          </div>
+          <button onClick={logout}
+            style={{
+              padding: '6px 10px', borderRadius: 4, border: '1px solid var(--border)',
+              background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
+              fontSize: 12,
+            }}>
+            Sair
+          </button>
         </div>
       </div>
 
@@ -177,10 +280,18 @@ export default function App() {
 
         {funds.length === 0 && (
           <Section title="Nenhum fundo criado">
-            <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 13 }}>
-              Crie o primeiro fundo para comecar a operar.
-            </p>
-            <CreateFundForm onCreated={loadFunds} />
+            {isLeader ? (
+              <>
+                <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 13 }}>
+                  Crie o primeiro fundo para comecar a operar.
+                </p>
+                <CreateFundForm teams={teams} onCreated={loadFunds} />
+              </>
+            ) : (
+              <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+                Nenhum fundo esta vinculado ao seu time.
+              </p>
+            )}
           </Section>
         )}
 
@@ -251,7 +362,7 @@ export default function App() {
         {view === 'trade' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
             <Section title="Executar Trade">
-              <TradeForm funds={funds} onSubmit={() => { loadFunds(); loadFundData(); }} />
+              <TradeForm funds={funds} activeFund={activeFund} currentUser={authUser} onSubmit={() => { loadFunds(); loadFundData(); }} />
             </Section>
             <Section title="Trades Recentes">
               <TradesTable trades={trades} onDelete={() => { loadFunds(); loadFundData(); }} />
@@ -263,7 +374,7 @@ export default function App() {
         {view === 'funds' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
             <Section title="Criar Novo Fundo">
-              <CreateFundForm onCreated={loadFunds} />
+              <CreateFundForm teams={teams} onCreated={loadFunds} />
             </Section>
             <Section title="Todos os Fundos">
               {funds.length === 0 ? (

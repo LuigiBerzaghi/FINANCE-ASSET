@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PUCFinance.AssetManagement.Data;
@@ -12,23 +13,28 @@ namespace PUCFinance.AssetManagement.Controllers;
 // ════════════════════════════════════════════════════════
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class FundsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly ExportService _export;
+    private readonly FundAccessService _fundAccess;
 
-    public FundsController(AppDbContext db, ExportService export)
+    public FundsController(AppDbContext db, ExportService export, FundAccessService fundAccess)
     {
         _db = db;
         _export = export;
+        _fundAccess = fundAccess;
     }
 
     /// <summary>GET /api/funds — Lista todos os fundos com resumo</summary>
     [HttpGet]
     public async Task<ActionResult<List<FundSummaryResponse>>> GetAll()
     {
-        var funds = await _db.Funds.Where(f => f.IsActive == 1).ToListAsync();
+        var funds = await _fundAccess.VisibleFunds()
+            .Include(f => f.Team)
+            .ToListAsync();
         var summaries = new List<FundSummaryResponse>();
 
         foreach (var fund in funds)
@@ -44,6 +50,8 @@ public class FundsController : ControllerBase
                 Id: fund.Id,
                 Name: fund.Name,
                 Strategy: fund.Strategy,
+                TeamId: fund.TeamId,
+                TeamName: fund.Team?.Name,
                 TotalEquity: latestNav?.TotalEquity ?? fund.InitialCapital,
                 ShareValue: latestNav?.ShareValue ?? 1.0,
                 DailyReturn: latestNav?.DailyReturn ?? 0,
@@ -56,15 +64,20 @@ public class FundsController : ControllerBase
     }
 
     /// <summary>POST /api/funds — Cria um novo fundo</summary>
+    [Authorize(Roles = AppRoles.Leader)]
     [HttpPost]
     public async Task<ActionResult<Fund>> Create([FromBody] CreateFundRequest request)
     {
+        if (request.TeamId.HasValue && !await _db.Teams.AnyAsync(t => t.Id == request.TeamId.Value))
+            return BadRequest(new { error = "Time informado nao existe" });
+
         var fund = new Fund
         {
             Name = request.Name,
             Strategy = request.Strategy,
             InitialCapital = request.InitialCapital,
-            TotalShares = request.TotalShares
+            TotalShares = request.TotalShares,
+            TeamId = request.TeamId
         };
 
         _db.Funds.Add(fund);
@@ -93,7 +106,7 @@ public class FundsController : ControllerBase
     [HttpGet("{id}/positions")]
     public async Task<ActionResult<List<PositionResponse>>> GetPositions(int id)
     {
-        var fund = await _db.Funds.FindAsync(id);
+        var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
         var positions = await _db.Positions
@@ -125,6 +138,9 @@ public class FundsController : ControllerBase
     [HttpGet("{id}/nav")]
     public async Task<ActionResult<List<NavPointResponse>>> GetNav(int id)
     {
+        if (!await _fundAccess.CanAccessFundAsync(id))
+            return NotFound();
+
         var navs = await _db.NavHistory
             .Where(n => n.FundId == id)
             .OrderBy(n => n.Date)
@@ -138,6 +154,9 @@ public class FundsController : ControllerBase
     [HttpGet("{id}/metrics")]
     public async Task<ActionResult<List<MetricsResponse>>> GetMetrics(int id)
     {
+        if (!await _fundAccess.CanAccessFundAsync(id))
+            return NotFound();
+
         var latestDate = await _db.Metrics
             .Where(m => m.FundId == id)
             .MaxAsync(m => (string?)m.Date);
@@ -159,7 +178,7 @@ public class FundsController : ControllerBase
     [HttpGet("{id}/performance")]
     public async Task<ActionResult<List<AssetPerformanceResponse>>> GetPerformance(int id)
     {
-        var fund = await _db.Funds.FindAsync(id);
+        var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
         var positions = await _db.Positions.Where(p => p.FundId == id).ToListAsync();
@@ -210,12 +229,13 @@ public class FundsController : ControllerBase
     }
 
     /// <summary>GET /api/funds/{id}/export — Exporta Excel do fundo</summary>
+    [Authorize(Roles = AppRoles.Leader)]
     [HttpGet("{id}/export")]
     public async Task<IActionResult> ExportExcel(int id)
     {
         try
         {
-            var fund = await _db.Funds.FindAsync(id);
+            var fund = await _fundAccess.FindVisibleFundAsync(id);
             if (fund == null) return NotFound();
 
             var bytes = await _export.ExportFundAsync(id);
@@ -232,7 +252,7 @@ public class FundsController : ControllerBase
     [HttpGet("{id}/exposure")]
     public async Task<ActionResult<ExposureResponse>> GetExposure(int id)
     {
-        var fund = await _db.Funds.FindAsync(id);
+        var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
         var positions = await _db.Positions.Where(p => p.FundId == id).ToListAsync();
@@ -296,7 +316,7 @@ public class FundsController : ControllerBase
     [HttpGet("{id}/return-by-class")]
     public async Task<ActionResult<List<ReturnByClassResponse>>> GetReturnByClass(int id)
     {
-        var fund = await _db.Funds.FindAsync(id);
+        var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
         var results = new List<ReturnByClassResponse>();
@@ -353,7 +373,7 @@ public class FundsController : ControllerBase
     [HttpGet("{id}/cdi-comparison")]
     public async Task<ActionResult<CdiBenchmarkResponse>> GetCdiComparison(int id)
     {
-        var fund = await _db.Funds.FindAsync(id);
+        var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
         var navs = await _db.NavHistory
@@ -361,7 +381,8 @@ public class FundsController : ControllerBase
             .OrderBy(n => n.Date)
             .ToListAsync();
 
-        if (navs.Count < 2) return Ok(new CdiBenchmarkResponse(0, 0, 0, "inception", new()));
+        if (navs.Count == 0)
+            return Ok(new CdiBenchmarkResponse(0, 0, 0, "inception", new()));
 
         var startDate = navs.First().Date;
         var firstShareValue = navs.First().ShareValue;
@@ -406,6 +427,7 @@ public class FundsController : ControllerBase
 // ════════════════════════════════════════════════════════
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class AssetsController : ControllerBase
 {
@@ -447,18 +469,31 @@ public class AssetsController : ControllerBase
 }
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class TradesController : ControllerBase
 {
     private readonly TradeService _tradeService;
-    private readonly BatchService _batchService;
     private readonly AppDbContext _db;
+    private readonly FundAccessService _fundAccess;
+    private readonly CurrentUserService _currentUser;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<TradesController> _logger;
 
-    public TradesController(TradeService tradeService, BatchService batchService, AppDbContext db)
+    public TradesController(
+        TradeService tradeService,
+        AppDbContext db,
+        FundAccessService fundAccess,
+        CurrentUserService currentUser,
+        IServiceScopeFactory scopeFactory,
+        ILogger<TradesController> logger)
     {
         _tradeService = tradeService;
-        _batchService = batchService;
         _db = db;
+        _fundAccess = fundAccess;
+        _currentUser = currentUser;
+        _scopeFactory = scopeFactory;
+        _logger = logger;
     }
 
     /// <summary>POST /api/trades — Executa um trade (preco buscado automaticamente)</summary>
@@ -467,14 +502,13 @@ public class TradesController : ControllerBase
     {
         try
         {
-            var trade = await _tradeService.ExecuteTradeAsync(request);
+            if (!await _fundAccess.CanAccessFundAsync(request.FundId))
+                return NotFound(new { error = "Fundo nao encontrado" });
 
-            // Roda batch automatico depois do trade
-            _ = Task.Run(async () =>
-            {
-                try { await _batchService.RunDailyUpdateAsync(); }
-                catch { /* batch falhar nao deve impedir o trade */ }
-            });
+            var securedRequest = request with { ExecutedBy = _currentUser.Name };
+            var trade = await _tradeService.ExecuteTradeAsync(securedRequest);
+
+            QueuePostTradeBatch(trade.FundId, trade.Id);
 
             return CreatedAtAction(nameof(GetByFund), new { fundId = trade.FundId }, trade);
         }
@@ -485,11 +519,48 @@ public class TradesController : ControllerBase
     }
 
     /// <summary>DELETE /api/trades/{id} — Deleta um trade e reverte posicao/caixa</summary>
+    private void QueuePostTradeBatch(int fundId, int tradeId)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var batch = scope.ServiceProvider.GetRequiredService<BatchService>();
+                var result = await batch.RunDailyUpdateAsync();
+
+                _logger.LogInformation(
+                    "Batch automatico pos-trade concluido. Trade: {TradeId} | Fundo: {FundId} | Status: {Status} | Precos: {PricesFetched}",
+                    tradeId,
+                    fundId,
+                    result.Status,
+                    result.PricesFetched);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Batch automatico pos-trade falhou. Trade: {TradeId} | Fundo: {FundId}",
+                    tradeId,
+                    fundId);
+            }
+        });
+    }
+
+    /// <summary>DELETE /api/trades/{id} - Deleta um trade e reverte posicao/caixa</summary>
     [HttpDelete("{id}")]
     public async Task<ActionResult> Delete(int id)
     {
         try
         {
+            var fundId = await _db.Trades
+                .Where(t => t.Id == id)
+                .Select(t => (int?)t.FundId)
+                .FirstOrDefaultAsync();
+
+            if (!fundId.HasValue || !await _fundAccess.CanAccessFundAsync(fundId.Value))
+                return NotFound(new { error = "Trade nao encontrado" });
+
             await _tradeService.DeleteTradeAsync(id);
             return Ok(new { message = "Trade deletado com sucesso" });
         }
@@ -503,6 +574,9 @@ public class TradesController : ControllerBase
     [HttpGet("fund/{fundId}")]
     public async Task<ActionResult<List<TradeResponse>>> GetByFund(int fundId)
     {
+        if (!await _fundAccess.CanAccessFundAsync(fundId))
+            return NotFound(new { error = "Fundo nao encontrado" });
+
         var trades = await _db.Trades
             .Where(t => t.FundId == fundId)
             .OrderByDescending(t => t.ExecutedAt)
@@ -537,13 +611,19 @@ public class BatchController : ControllerBase
     public async Task<ActionResult<BatchResultResponse>> Run()
     {
         var batchToken = _config["BATCH_TOKEN"];
-        if (!string.IsNullOrWhiteSpace(batchToken))
-        {
-            var providedToken = Request.Headers["X-Batch-Token"].FirstOrDefault();
-            if (!string.Equals(providedToken, batchToken, StringComparison.Ordinal))
-                return Unauthorized(new { error = "Invalid batch token" });
-        }
+        var providedToken = Request.Headers["X-Batch-Token"].FirstOrDefault();
+        var hasValidBatchToken = !string.IsNullOrWhiteSpace(batchToken)
+            && string.Equals(providedToken, batchToken, StringComparison.Ordinal);
+        var isAuthenticatedLeader = User.Identity?.IsAuthenticated == true && User.IsInRole(AppRoles.Leader);
 
+        if (!hasValidBatchToken && !isAuthenticatedLeader)
+            return Unauthorized(new { error = "Invalid batch token or insufficient permissions" });
+
+        return await RunBatchAsync();
+    }
+
+    private async Task<ActionResult<BatchResultResponse>> RunBatchAsync()
+    {
         var result = await _batch.RunDailyUpdateAsync();
         if (!string.Equals(result.Status, "success", StringComparison.OrdinalIgnoreCase))
             return StatusCode(StatusCodes.Status500InternalServerError, result);
@@ -556,6 +636,7 @@ public class BatchController : ControllerBase
 // ════════════════════════════════════════════════════════
 
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class PricesController : ControllerBase
 {

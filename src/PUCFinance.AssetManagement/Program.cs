@@ -5,6 +5,9 @@ using PUCFinance.AssetManagement.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+
 // Database
 // Heroku: DATABASE_URL from Heroku Postgres
 // Local: database/pucfinance.db at the repository root
@@ -30,9 +33,19 @@ builder.Services.AddScoped<MetricsCalculator>();
 builder.Services.AddScoped<BatchService>();
 builder.Services.AddScoped<ExportService>();
 builder.Services.AddScoped<CdiService>();
+builder.Services.AddSingleton<PasswordService>();
+builder.Services.AddSingleton<AuthTokenService>();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<CurrentUserService>();
+builder.Services.AddScoped<FundAccessService>();
 builder.Services.AddHttpClient();
 
 // API
+builder.Services.AddAuthentication(SimpleBearerAuthenticationHandler.SchemeName)
+    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, SimpleBearerAuthenticationHandler>(
+        SimpleBearerAuthenticationHandler.SchemeName,
+        options => { });
+builder.Services.AddAuthorization();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -68,6 +81,9 @@ app.UseCors("AllowAll");
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapControllers();
 

@@ -1,10 +1,24 @@
 -- PUC Finance - Seed Data
 
+-- Times de exemplo
+INSERT OR IGNORE INTO teams (id, name) VALUES
+    (1, 'Alpha Team'),
+    (2, 'Beta Team'),
+    (3, 'Gamma Team');
+
+-- Usuarios de exemplo
+-- Senhas: Lider/Admin@123, Alpha/Alpha@123, Beta/Beta@123, Gamma/Gamma@123
+INSERT OR IGNORE INTO app_users (name, email, password_hash, role, team_id) VALUES
+    ('Lider Geral', 'lider@pucfinance.local', 'pbkdf2$100000$/T3+b/2tq0KVjqxkBCQLiw==$TPK08IyhFVtzKxkJgxy3K5JBbg/6ptLhdw6gBJl2V+Y=', 'leader', NULL),
+    ('Gestor Alpha', 'alpha@pucfinance.local', 'pbkdf2$100000$LOGxdCRjVwajD/e7apjB6A==$g+rwbQWCNnLqRdF7FPHrfkuKFaenwFItYaIlRcZOxbY=', 'manager', 1),
+    ('Gestor Beta', 'beta@pucfinance.local', 'pbkdf2$100000$oxQTGcWSfjQLI6qU528pgw==$7awPtTrHdbuGiixOSeGOOdd2/caUis0MeqbhBp9L1RA=', 'manager', 2),
+    ('Gestor Gamma', 'gamma@pucfinance.local', 'pbkdf2$100000$06g5PwCX59cCnSj7rE+NRA==$Xm+6JimSi39bss6T+tw3+eggLBVmyTsb80d8knOOx+8=', 'manager', 3);
+
 -- Fundos de exemplo
-INSERT OR IGNORE INTO funds (name, strategy, initial_capital, total_shares) VALUES
-    ('Alpha',   'Long Only',   1000000.00, 1000000),
-    ('Beta',    'Long/Short',  1000000.00, 1000000),
-    ('Gamma',   'Macro',       1000000.00, 1000000);
+INSERT OR IGNORE INTO funds (id, team_id, name, strategy, initial_capital, total_shares) VALUES
+    (1, 1, 'Alpha',   'Long Only',   1000000.00, 1000000),
+    (2, 2, 'Beta',    'Long/Short',  1000000.00, 1000000),
+    (3, 3, 'Gamma',   'Macro',       1000000.00, 1000000);
 
 -- Caixa inicial
 INSERT OR IGNORE INTO cash (fund_id, balance) VALUES

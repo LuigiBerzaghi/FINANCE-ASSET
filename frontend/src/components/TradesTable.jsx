@@ -1,4 +1,5 @@
 import { fmtBRL, fmtQty } from '../lib/format';
+import { del } from '../lib/api';
 
 export default function TradesTable({ trades, onDelete }) {
   if (!trades?.length) {
@@ -10,12 +11,7 @@ export default function TradesTable({ trades, onDelete }) {
   const handleDelete = async (id, ticker) => {
     if (!confirm(`Deletar trade de ${ticker}? Isso reverte a posicao e o caixa.`)) return;
     try {
-      const r = await fetch(`/api/trades/${id}`, { method: 'DELETE' });
-      if (!r.ok) {
-        const data = await r.json();
-        alert(data.error || 'Erro ao deletar');
-        return;
-      }
+      await del(`/trades/${id}`);
       onDelete?.();
     } catch (e) {
       alert('Erro ao deletar: ' + e.message);

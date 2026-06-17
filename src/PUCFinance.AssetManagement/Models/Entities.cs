@@ -1,14 +1,42 @@
 namespace PUCFinance.AssetManagement.Models;
 
+public static class AppRoles
+{
+    public const string Leader = "leader";
+    public const string Manager = "manager";
+}
+
+public class Team
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string CreatedAt { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+}
+
+public class AppUser
+{
+    public int Id { get; set; }
+    public int? TeamId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Email { get; set; } = string.Empty;
+    public string PasswordHash { get; set; } = string.Empty;
+    public string Role { get; set; } = AppRoles.Manager;
+    public int IsActive { get; set; } = 1;
+    public string CreatedAt { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+    public Team? Team { get; set; }
+}
+
 public class Fund
 {
     public int Id { get; set; }
+    public int? TeamId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Strategy { get; set; }
     public double InitialCapital { get; set; } = 1_000_000;
     public double TotalShares { get; set; } = 1_000_000;
     public string CreatedAt { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
     public int IsActive { get; set; } = 1;
+    public Team? Team { get; set; }
 }
 
 public class Position

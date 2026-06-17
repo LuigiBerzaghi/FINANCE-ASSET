@@ -47,10 +47,19 @@ public class CdiService
             var toStr = to.ToString("dd/MM/yyyy");
 
             // API do Bacen - Serie 12 (CDI diario)
-            var url = $"https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados?formato=json&dataInicial={fromStr}&dataFinal={toStr}";
+            var url = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados"
+                + $"?formato=json&dataInicial={Uri.EscapeDataString(fromStr)}&dataFinal={Uri.EscapeDataString(toStr)}";
 
-            var response = await _http.GetStringAsync(url);
-            var records = JsonSerializer.Deserialize<List<BcbRecord>>(response);
+            using var response = await _http.GetAsync(url);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogWarning("Bacen nao retornou CDI para o periodo {From} a {To}", fromStr, toStr);
+                return;
+            }
+
+            response.EnsureSuccessStatusCode();
+            var content = await response.Content.ReadAsStringAsync();
+            var records = JsonSerializer.Deserialize<List<BcbRecord>>(content);
 
             if (records == null || records.Count == 0)
             {

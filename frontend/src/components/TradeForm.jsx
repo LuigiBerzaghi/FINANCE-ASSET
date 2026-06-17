@@ -1,16 +1,23 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { post, get } from '../lib/api';
 import { fmtBRL } from '../lib/format';
 
-export default function TradeForm({ funds, onSubmit }) {
+export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) {
   const [form, setForm] = useState({
-    fundId: '', ticker: '', side: 'long', quantity: '', thesis: '', executedBy: '',
+    fundId: '', ticker: '', side: 'long', quantity: '', thesis: '',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [currentPrice, setCurrentPrice] = useState(null);
   const [priceLoading, setPriceLoading] = useState(false);
+  const isLeader = currentUser?.role === 'leader';
+  const defaultFundId = activeFund || funds[0]?.id || '';
+
+  useEffect(() => {
+    if (!isLeader) return;
+    setForm((f) => ({ ...f, fundId: defaultFundId ? String(defaultFundId) : '' }));
+  }, [defaultFundId, isLeader]);
 
   const fetchPrice = async (ticker) => {
     if (!ticker || ticker.trim().length < 2) {
@@ -32,22 +39,24 @@ export default function TradeForm({ funds, onSubmit }) {
     setSuccess(null);
     setLoading(true);
     try {
+      const selectedFundId = isLeader ? form.fundId : defaultFundId;
       const payload = {
-        fundId: parseInt(form.fundId),
+        fundId: parseInt(selectedFundId),
         ticker: form.ticker.trim().toUpperCase(),
         side: form.side,
         quantity: parseFloat(form.quantity),
         thesis: form.thesis || null,
-        executedBy: form.executedBy || null,
+        executedBy: null,
       };
       if (!payload.fundId || !payload.ticker || !payload.quantity) {
-        throw new Error('Preencha fundo, ticker e quantidade');
+        throw new Error(isLeader ? 'Preencha fundo, ticker e quantidade' : 'Preencha ticker e quantidade');
       }
       const trade = await post('/trades', payload);
       setSuccess(`Trade executado: ${payload.side.toUpperCase()} ${payload.quantity} ${payload.ticker} @ R$${trade.price?.toFixed(2) || '?'}`);
       setForm((f) => ({ ...f, ticker: '', quantity: '', thesis: '' }));
       setCurrentPrice(null);
-      setTimeout(() => onSubmit?.(), 2000);
+      onSubmit?.();
+      setTimeout(() => onSubmit?.(), 5000);
     } catch (e) {
       setError(e.message);
     }
@@ -78,15 +87,17 @@ export default function TradeForm({ funds, onSubmit }) {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
-      <div>
-        <label style={labelStyle}>Fundo</label>
-        <select style={inputStyle} value={form.fundId} onChange={(e) => setForm((f) => ({ ...f, fundId: e.target.value }))}>
-          <option value="">Selecione</option>
-          {funds.map((f) => (
-            <option key={f.id} value={f.id}>{f.name}</option>
-          ))}
-        </select>
-      </div>
+      {isLeader && (
+        <div>
+          <label style={labelStyle}>Fundo</label>
+          <select style={inputStyle} value={form.fundId} onChange={(e) => setForm((f) => ({ ...f, fundId: e.target.value }))}>
+            <option value="">Selecione</option>
+            {funds.map((f) => (
+              <option key={f.id} value={f.id}>{f.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
       <div>
         <label style={labelStyle}>Ticker</label>
         <input style={inputStyle} placeholder="PETR4" value={form.ticker}
@@ -129,8 +140,15 @@ export default function TradeForm({ funds, onSubmit }) {
       </div>
       <div>
         <label style={labelStyle}>Gestor</label>
-        <input style={inputStyle} placeholder="Nome" value={form.executedBy}
-          onChange={(e) => setForm((f) => ({ ...f, executedBy: e.target.value }))} />
+        <div style={{
+          ...inputStyle,
+          minHeight: 34,
+          color: 'var(--text-muted)',
+          display: 'flex',
+          alignItems: 'center',
+        }}>
+          {currentUser?.name || 'Usuario autenticado'}
+        </div>
       </div>
       <div style={{ gridColumn: '1 / -1' }}>
         <label style={labelStyle}>Tese</label>

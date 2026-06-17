@@ -41,7 +41,7 @@ public class MetricsCalculator
             .OrderBy(n => n.Date)
             .ToListAsync();
 
-        if (navs.Count < 2) return;
+        if (navs.Count == 0) return;
 
         var today = DateTime.Today.ToString("yyyy-MM-dd");
         var dailyReturns = navs
@@ -49,7 +49,6 @@ public class MetricsCalculator
             .Select(n => n.DailyReturn!.Value)
             .ToList();
 
-        if (dailyReturns.Count < 2) return;
 
         // Desde o início
         await SaveMetric(fundId, today, "inception", dailyReturns, navs);
@@ -58,14 +57,14 @@ public class MetricsCalculator
         var mtdStart = DateTime.Today.ToString("yyyy-MM-01");
         var mtdNavs = navs.Where(n => string.Compare(n.Date, mtdStart) >= 0).ToList();
         var mtdReturns = mtdNavs.Where(n => n.DailyReturn.HasValue).Select(n => n.DailyReturn!.Value).ToList();
-        if (mtdReturns.Count >= 2)
+        if (mtdNavs.Count > 0)
             await SaveMetric(fundId, today, "mtd", mtdReturns, mtdNavs);
 
         // YTD
         var ytdStart = DateTime.Today.ToString("yyyy-01-01");
         var ytdNavs = navs.Where(n => string.Compare(n.Date, ytdStart) >= 0).ToList();
         var ytdReturns = ytdNavs.Where(n => n.DailyReturn.HasValue).Select(n => n.DailyReturn!.Value).ToList();
-        if (ytdReturns.Count >= 2)
+        if (ytdNavs.Count > 0)
             await SaveMetric(fundId, today, "ytd", ytdReturns, ytdNavs);
     }
 

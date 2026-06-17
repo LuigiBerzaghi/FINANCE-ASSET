@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { post } from '../lib/api';
 
-export default function CreateFundForm({ onCreated }) {
+export default function CreateFundForm({ teams = [], onCreated }) {
   const [name, setName] = useState('');
   const [strategy, setStrategy] = useState('');
+  const [teamId, setTeamId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -12,9 +13,14 @@ export default function CreateFundForm({ onCreated }) {
     setLoading(true);
     setError(null);
     try {
-      await post('/funds', { name: name.trim(), strategy: strategy.trim() || null });
+      await post('/funds', {
+        name: name.trim(),
+        strategy: strategy.trim() || null,
+        teamId: teamId ? parseInt(teamId) : null,
+      });
       setName('');
       setStrategy('');
+      setTeamId('');
       onCreated?.();
     } catch (e) {
       setError(e.message);
@@ -37,6 +43,14 @@ export default function CreateFundForm({ onCreated }) {
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
       <input style={{ ...inputStyle, width: 160 }} placeholder="Nome do fundo" value={name} onChange={(e) => setName(e.target.value)} />
       <input style={{ ...inputStyle, width: 160 }} placeholder="Estrategia" value={strategy} onChange={(e) => setStrategy(e.target.value)} />
+      {teams.length > 0 && (
+        <select style={{ ...inputStyle, width: 180 }} value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+          <option value="">Sem time</option>
+          {teams.map((team) => (
+            <option key={team.id} value={team.id}>{team.name}</option>
+          ))}
+        </select>
+      )}
       <button onClick={handleCreate} disabled={loading}
         style={{
           padding: '8px 16px', borderRadius: 4, border: '1px solid var(--accent)',

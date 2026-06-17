@@ -5,10 +5,34 @@ PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
 -- ============================================================
+-- TIMES
+-- ============================================================
+CREATE TABLE IF NOT EXISTS teams (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT    NOT NULL UNIQUE,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- USUARIOS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS app_users (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id         INTEGER REFERENCES teams(id),
+    name            TEXT    NOT NULL,
+    email           TEXT    NOT NULL UNIQUE,
+    password_hash   TEXT    NOT NULL,
+    role            TEXT    NOT NULL DEFAULT 'manager' CHECK(role IN ('leader', 'manager')),
+    is_active       INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ============================================================
 -- FUNDOS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS funds (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id         INTEGER REFERENCES teams(id),
     name            TEXT    NOT NULL UNIQUE,       -- "Fundo Alpha", "Fundo Beta"
     strategy        TEXT,                          -- "Long Only", "Long/Short", "Macro"
     initial_capital REAL    NOT NULL DEFAULT 1000000.00,
@@ -158,6 +182,8 @@ CREATE TABLE IF NOT EXISTS assets (
 -- ============================================================
 -- ÍNDICES
 -- ============================================================
+CREATE INDEX IF NOT EXISTS idx_users_team           ON app_users(team_id);
+CREATE INDEX IF NOT EXISTS idx_funds_team           ON funds(team_id);
 CREATE INDEX IF NOT EXISTS idx_positions_fund      ON positions(fund_id);
 CREATE INDEX IF NOT EXISTS idx_trades_fund          ON trades(fund_id);
 CREATE INDEX IF NOT EXISTS idx_trades_ticker        ON trades(ticker);

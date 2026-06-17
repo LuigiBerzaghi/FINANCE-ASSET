@@ -7,6 +7,8 @@ public class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
+    public DbSet<Team> Teams => Set<Team>();
+    public DbSet<AppUser> Users => Set<AppUser>();
     public DbSet<Fund> Funds => Set<Fund>();
     public DbSet<Position> Positions => Set<Position>();
     public DbSet<Trade> Trades => Set<Trade>();
@@ -21,12 +23,41 @@ public class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // Team
+        modelBuilder.Entity<Team>(e =>
+        {
+            e.ToTable("teams");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.Name).HasColumnName("name").IsRequired();
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.HasIndex(x => x.Name).IsUnique();
+        });
+
+        // AppUser
+        modelBuilder.Entity<AppUser>(e =>
+        {
+            e.ToTable("app_users");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TeamId).HasColumnName("team_id");
+            e.Property(x => x.Name).HasColumnName("name").IsRequired();
+            e.Property(x => x.Email).HasColumnName("email").IsRequired();
+            e.Property(x => x.PasswordHash).HasColumnName("password_hash").IsRequired();
+            e.Property(x => x.Role).HasColumnName("role").IsRequired();
+            e.Property(x => x.IsActive).HasColumnName("is_active");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.HasIndex(x => x.Email).IsUnique();
+            e.HasOne(x => x.Team).WithMany().HasForeignKey(x => x.TeamId);
+        });
+
         // Fund
         modelBuilder.Entity<Fund>(e =>
         {
             e.ToTable("funds");
             e.HasKey(x => x.Id);
             e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.TeamId).HasColumnName("team_id");
             e.Property(x => x.Name).HasColumnName("name").IsRequired();
             e.Property(x => x.Strategy).HasColumnName("strategy");
             e.Property(x => x.InitialCapital).HasColumnName("initial_capital");
@@ -34,6 +65,7 @@ public class AppDbContext : DbContext
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.Property(x => x.IsActive).HasColumnName("is_active");
             e.HasIndex(x => x.Name).IsUnique();
+            e.HasOne(x => x.Team).WithMany().HasForeignKey(x => x.TeamId);
         });
 
         // Position
