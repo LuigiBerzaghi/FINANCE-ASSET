@@ -524,14 +524,30 @@ public class TradesController : ControllerBase
 public class BatchController : ControllerBase
 {
     private readonly BatchService _batch;
+    private readonly IConfiguration _config;
 
-    public BatchController(BatchService batch) => _batch = batch;
+    public BatchController(BatchService batch, IConfiguration config)
+    {
+        _batch = batch;
+        _config = config;
+    }
 
     /// <summary>POST /api/batch/run — Executa o pipeline diário</summary>
     [HttpPost("run")]
     public async Task<ActionResult<BatchResultResponse>> Run()
     {
+        var batchToken = _config["BATCH_TOKEN"];
+        if (!string.IsNullOrWhiteSpace(batchToken))
+        {
+            var providedToken = Request.Headers["X-Batch-Token"].FirstOrDefault();
+            if (!string.Equals(providedToken, batchToken, StringComparison.Ordinal))
+                return Unauthorized(new { error = "Invalid batch token" });
+        }
+
         var result = await _batch.RunDailyUpdateAsync();
+        if (!string.Equals(result.Status, "success", StringComparison.OrdinalIgnoreCase))
+            return StatusCode(StatusCodes.Status500InternalServerError, result);
+
         return Ok(result);
     }
 }
