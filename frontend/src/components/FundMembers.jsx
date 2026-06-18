@@ -34,7 +34,7 @@ export default function FundMembers({ data }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr>
-                {['Nome', 'Email', 'Perfil', 'Status'].map((header) => (
+                {['Nome', 'Email', 'Status'].map((header) => (
                   <th key={header} style={{
                     padding: '8px 10px',
                     textAlign: 'left',
@@ -57,9 +57,6 @@ export default function FundMembers({ data }) {
                   </td>
                   <td style={{ padding: '10px', color: 'var(--text-muted)' }}>
                     {member.email}
-                  </td>
-                  <td style={{ padding: '10px', color: 'var(--text-muted)' }}>
-                    {member.role === 'leader' ? 'Lider' : 'Gestor'}
                   </td>
                   <td style={{ padding: '10px' }}>
                     <span style={{
