@@ -18,6 +18,7 @@ import ExposureChart from './components/ExposureChart';
 import CdiChart from './components/CdiChart';
 import ReturnByClass from './components/ReturnByClass';
 import LoginForm from './components/LoginForm';
+import FundMembers from './components/FundMembers';
 
 export default function App() {
   const { theme, toggle: toggleTheme } = useTheme();
@@ -36,6 +37,7 @@ export default function App() {
   const [exposure, setExposure] = useState(null);
   const [cdiData, setCdiData] = useState(null);
   const [returnByClass, setReturnByClass] = useState([]);
+  const [fundMembers, setFundMembers] = useState(null);
 
   const loadFunds = useCallback(async () => {
     try {
@@ -51,8 +53,9 @@ export default function App() {
 
   const loadFundData = useCallback(async () => {
     if (!activeFund) return;
+    if (authUser?.role === 'leader') setFundMembers(null);
     try {
-      const [pos, nav, trd, met, exp, cdi, rbc] = await Promise.all([
+      const [pos, nav, trd, met, exp, cdi, rbc, members] = await Promise.all([
         get(`/funds/${activeFund}/positions`),
         get(`/funds/${activeFund}/nav`),
         get(`/trades/fund/${activeFund}`),
@@ -60,6 +63,9 @@ export default function App() {
         get(`/funds/${activeFund}/exposure`).catch(() => null),
         get(`/funds/${activeFund}/cdi-comparison`).catch(() => null),
         get(`/funds/${activeFund}/return-by-class`).catch(() => []),
+        authUser?.role === 'leader'
+          ? get(`/funds/${activeFund}/members`).catch(() => null)
+          : Promise.resolve(null),
       ]);
       setPositions(pos);
       setNavData(nav);
@@ -68,10 +74,11 @@ export default function App() {
       setExposure(exp);
       setCdiData(cdi);
       setReturnByClass(rbc);
+      setFundMembers(members);
     } catch (e) {
       console.error('Erro ao carregar dados do fundo:', e);
     }
-  }, [activeFund]);
+  }, [activeFund, authUser?.role]);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,6 +162,7 @@ export default function App() {
     setTeams([]);
     setFunds([]);
     setActiveFund(null);
+    setFundMembers(null);
     setView('dashboard');
   };
 
@@ -358,6 +366,12 @@ export default function App() {
             <Section title="Historico de Trades">
               <TradesTable trades={trades} onDelete={() => { loadFunds(); loadFundData(); }} />
             </Section>
+
+            {isLeader && (
+              <Section title="Membros do Fundo">
+                <FundMembers data={fundMembers} />
+              </Section>
+            )}
           </div>
         )}
 

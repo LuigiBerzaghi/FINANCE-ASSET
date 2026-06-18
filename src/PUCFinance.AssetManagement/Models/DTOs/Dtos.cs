@@ -35,6 +35,21 @@ public record TeamResponse(
     string Name
 );
 
+public record FundMembersResponse(
+    int FundId,
+    int? TeamId,
+    string? TeamName,
+    List<FundMemberResponse> Members
+);
+
+public record FundMemberResponse(
+    int Id,
+    string Name,
+    string Email,
+    string Role,
+    bool IsActive
+);
+
 public record ExecuteTradeRequest(
     int FundId,
     string Ticker,

@@ -211,6 +211,35 @@ public class FundsController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>GET /api/funds/{id}/members - Lista membros do time do fundo</summary>
+    [Authorize(Roles = AppRoles.Leader)]
+    [HttpGet("{id}/members")]
+    public async Task<ActionResult<FundMembersResponse>> GetMembers(int id)
+    {
+        var fund = await _fundAccess.FindVisibleFundAsync(id);
+        if (fund == null) return NotFound();
+
+        var members = fund.TeamId.HasValue
+            ? await _db.Users
+                .Where(u => u.TeamId == fund.TeamId.Value)
+                .OrderByDescending(u => u.IsActive)
+                .ThenBy(u => u.Name)
+                .Select(u => new FundMemberResponse(
+                    u.Id,
+                    u.Name,
+                    u.Email,
+                    u.Role,
+                    u.IsActive == 1))
+                .ToListAsync()
+            : new List<FundMemberResponse>();
+
+        return Ok(new FundMembersResponse(
+            FundId: fund.Id,
+            TeamId: fund.TeamId,
+            TeamName: fund.Team?.Name,
+            Members: members));
+    }
+
     /// <summary>GET /api/funds/{id}/nav — Histórico de NAV</summary>
     [HttpGet("{id}/nav")]
     public async Task<ActionResult<List<NavPointResponse>>> GetNav(int id)
