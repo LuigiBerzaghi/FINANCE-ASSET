@@ -84,6 +84,15 @@ public class NavCalculator
             dailyReturn = (shareValue - previousNav.ShareValue) / previousNav.ShareValue;
         }
 
+        var currentTickers = positions.Select(p => p.Ticker).ToList();
+        var todaysHistory = await _db.PositionHistory
+            .Where(h => h.FundId == fundId && h.Date == today)
+            .ToListAsync();
+        var staleHistory = todaysHistory
+            .Where(h => !currentTickers.Contains(h.Ticker))
+            .ToList();
+        _db.PositionHistory.RemoveRange(staleHistory);
+
         // Snapshot de cada posicao no position_history
         foreach (var pos in positions)
         {
@@ -107,6 +116,9 @@ public class NavCalculator
 
             if (existingHist != null)
             {
+                existingHist.Quantity = pos.Quantity;
+                existingHist.AvgPrice = pos.AvgPrice;
+                existingHist.Side = pos.Side;
                 existingHist.CurrentPrice = pos.CurrentPrice;
                 existingHist.MarketValue = pos.MarketValue;
                 existingHist.UnrealizedPnl = pos.UnrealizedPnl;

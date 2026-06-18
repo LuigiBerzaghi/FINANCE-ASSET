@@ -55,16 +55,16 @@ public class MetricsCalculator
 
         // MTD
         var mtdStart = DateTime.Today.ToString("yyyy-MM-01");
-        var mtdNavs = navs.Where(n => string.Compare(n.Date, mtdStart) >= 0).ToList();
-        var mtdReturns = mtdNavs.Where(n => n.DailyReturn.HasValue).Select(n => n.DailyReturn!.Value).ToList();
-        if (mtdNavs.Count > 0)
+        var mtdNavs = BuildPeriodNavs(navs, mtdStart);
+        var mtdReturns = PeriodReturns(navs, mtdStart);
+        if (HasNavInPeriod(navs, mtdStart))
             await SaveMetric(fundId, today, "mtd", mtdReturns, mtdNavs);
 
         // YTD
         var ytdStart = DateTime.Today.ToString("yyyy-01-01");
-        var ytdNavs = navs.Where(n => string.Compare(n.Date, ytdStart) >= 0).ToList();
-        var ytdReturns = ytdNavs.Where(n => n.DailyReturn.HasValue).Select(n => n.DailyReturn!.Value).ToList();
-        if (ytdNavs.Count > 0)
+        var ytdNavs = BuildPeriodNavs(navs, ytdStart);
+        var ytdReturns = PeriodReturns(navs, ytdStart);
+        if (HasNavInPeriod(navs, ytdStart))
             await SaveMetric(fundId, today, "ytd", ytdReturns, ytdNavs);
     }
 
@@ -72,10 +72,11 @@ public class MetricsCalculator
         List<double> dailyReturns, List<NavHistory> navs)
     {
         var cumReturn = CumulativeReturn(navs);
+        var annualizedReturn = AnnualizedReturn(dailyReturns, cumReturn);
         var vol = Volatility(dailyReturns);
-        var sharpe = SharpeRatio(dailyReturns, vol);
+        var sharpe = SharpeRatio(annualizedReturn, vol);
         var mdd = MaxDrawdown(navs);
-        var (alpha, beta) = await AlphaBeta(fundId, dailyReturns, navs);
+        var (alpha, beta) = await AlphaBeta(fundId, navs);
 
         var existing = await _db.Metrics
             .FirstOrDefaultAsync(m => m.FundId == fundId && m.Date == date && m.Period == period);
@@ -83,6 +84,7 @@ public class MetricsCalculator
         if (existing != null)
         {
             existing.CumulativeReturn = cumReturn;
+            existing.AnnualizedReturn = annualizedReturn;
             existing.Volatility = vol;
             existing.SharpeRatio = sharpe;
             existing.MaxDrawdown = mdd;
@@ -98,6 +100,7 @@ public class MetricsCalculator
                 Date = date,
                 Period = period,
                 CumulativeReturn = cumReturn,
+                AnnualizedReturn = annualizedReturn,
                 Volatility = vol,
                 SharpeRatio = sharpe,
                 MaxDrawdown = mdd,
@@ -111,6 +114,35 @@ public class MetricsCalculator
     }
 
     // ── Cálculos ────────────────────────────────────────────
+
+    private static List<NavHistory> BuildPeriodNavs(List<NavHistory> navs, string periodStart)
+    {
+        var periodNavs = navs
+            .Where(n => string.Compare(n.Date, periodStart) >= 0)
+            .ToList();
+
+        var baseNav = navs
+            .Where(n => string.Compare(n.Date, periodStart) < 0)
+            .LastOrDefault();
+
+        if (baseNav != null)
+            periodNavs.Insert(0, baseNav);
+
+        return periodNavs;
+    }
+
+    private static List<double> PeriodReturns(List<NavHistory> navs, string periodStart)
+    {
+        return navs
+            .Where(n => string.Compare(n.Date, periodStart) >= 0 && n.DailyReturn.HasValue)
+            .Select(n => n.DailyReturn!.Value)
+            .ToList();
+    }
+
+    private static bool HasNavInPeriod(List<NavHistory> navs, string periodStart)
+    {
+        return navs.Any(n => string.Compare(n.Date, periodStart) >= 0);
+    }
 
     /// <summary>
     /// Retorno acumulado = (cota_final / cota_inicial) - 1
@@ -134,13 +166,20 @@ public class MetricsCalculator
         return Math.Sqrt(variance) * Math.Sqrt(252);
     }
 
+    private static double AnnualizedReturn(List<double> returns, double cumulativeReturn)
+    {
+        if (returns.Count == 0) return 0;
+        if (cumulativeReturn <= -1) return -1;
+
+        return Math.Pow(1 + cumulativeReturn, 252.0 / returns.Count) - 1;
+    }
+
     /// <summary>
     /// Sharpe = (retorno_anualizado - risk_free) / volatilidade
     /// </summary>
-    private static double SharpeRatio(List<double> returns, double vol)
+    private static double SharpeRatio(double annualizedReturn, double vol)
     {
-        if (vol == 0 || returns.Count < 2) return 0;
-        var annualizedReturn = returns.Average() * 252;
+        if (vol == 0) return 0;
         return (annualizedReturn - AnnualRiskFreeRate) / vol;
     }
 
@@ -173,7 +212,7 @@ public class MetricsCalculator
     /// Alpha = Rf_mean - Beta × Rb_mean (anualizado)
     /// </summary>
     private async Task<(double? alpha, double? beta)> AlphaBeta(
-        int fundId, List<double> fundReturns, List<NavHistory> navs)
+        int fundId, List<NavHistory> navs)
     {
         // Pega retornos do benchmark nas mesmas datas
         var dates = navs.Where(n => n.DailyReturn.HasValue).Select(n => n.Date).ToList();

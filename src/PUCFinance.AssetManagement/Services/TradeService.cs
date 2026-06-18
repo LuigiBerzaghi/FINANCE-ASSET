@@ -61,7 +61,7 @@ public class TradeService
         _db.Trades.Add(trade);
 
         // 2. Atualiza posicao
-        await UpdatePositionAsync(request.FundId, trade.Ticker, signedQuantity, price.Value, request.Side);
+        await UpdatePositionAsync(request.FundId, trade.Ticker, signedQuantity, price.Value, request.Side, trade.ExecutedAt);
 
         // 3. Atualiza caixa
         cash.Balance += cashImpact;
@@ -87,52 +87,67 @@ public class TradeService
         var cash = await _db.Cash.FindAsync(trade.FundId)
             ?? throw new InvalidOperationException($"Caixa nao encontrado para fundo {trade.FundId}");
 
-        // Reverte o impacto no caixa
-        var signedQuantity = trade.Side == "long" ? trade.Quantity : -trade.Quantity;
-        var cashImpact = -(signedQuantity * trade.Price);
-        cash.Balance -= cashImpact; // inverte o impacto original
+        var fund = await _db.Funds.FindAsync(trade.FundId)
+            ?? throw new InvalidOperationException($"Fundo {trade.FundId} nao encontrado");
+
+        var remainingTrades = await _db.Trades
+            .Where(t => t.FundId == trade.FundId && t.Id != tradeId)
+            .OrderBy(t => t.ExecutedAt)
+            .ThenBy(t => t.Id)
+            .ToListAsync();
+
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+
+        var fundPositions = await _db.Positions
+            .Where(p => p.FundId == trade.FundId)
+            .ToListAsync();
+        _db.Positions.RemoveRange(fundPositions);
+
+        var fundRealizedPnl = await _db.RealizedPnl
+            .Where(r => r.FundId == trade.FundId)
+            .ToListAsync();
+        _db.RealizedPnl.RemoveRange(fundRealizedPnl);
+
+        _db.Trades.Remove(trade);
+        cash.Balance = fund.InitialCapital;
         cash.UpdatedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
 
-        // Reverte a posicao
-        var position = await _db.Positions
-            .FirstOrDefaultAsync(p => p.FundId == trade.FundId && p.Ticker == trade.Ticker);
+        await _db.SaveChangesAsync();
 
-        if (position != null)
+        foreach (var remaining in remainingTrades)
         {
-            var reverseQuantity = trade.Side == "long" ? -trade.Quantity : trade.Quantity;
-            var newQuantity = position.Quantity + reverseQuantity;
+            var remainingSignedQuantity = remaining.Side == "long"
+                ? remaining.Quantity
+                : -remaining.Quantity;
 
-            if (Math.Abs(newQuantity) < 0.0001)
-            {
-                _db.Positions.Remove(position);
-            }
-            else
-            {
-                position.Quantity = newQuantity;
-                position.Side = newQuantity > 0 ? "long" : "short";
-                // Preco medio nao eh perfeito ao reverter, mas eh o melhor que da pra fazer
-                position.UpdatedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
-            }
+            await UpdatePositionAsync(
+                remaining.FundId,
+                remaining.Ticker,
+                remainingSignedQuantity,
+                remaining.Price,
+                remaining.Side,
+                remaining.ExecutedAt);
+
+            cash.Balance += -(remainingSignedQuantity * remaining.Price);
         }
 
-        // Remove P&L realizado associado (se houver)
-        var relatedPnl = await _db.RealizedPnl
-            .Where(r => r.FundId == trade.FundId && r.Ticker == trade.Ticker
-                && r.ClosedAt == trade.ExecutedAt)
-            .ToListAsync();
-        _db.RealizedPnl.RemoveRange(relatedPnl);
-
-        // Remove o trade
-        _db.Trades.Remove(trade);
+        cash.UpdatedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
 
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         _logger.LogInformation(
             "Trade deletado: {Side} {Qty} {Ticker} @ {Price} | Fundo: {FundId}",
             trade.Side, trade.Quantity, trade.Ticker, trade.Price, trade.FundId);
     }
 
-    private async Task UpdatePositionAsync(int fundId, string ticker, double signedQuantity, double price, string side)
+    private async Task UpdatePositionAsync(
+        int fundId,
+        string ticker,
+        double signedQuantity,
+        double price,
+        string side,
+        string executedAt)
     {
         var position = await _db.Positions
             .FirstOrDefaultAsync(p => p.FundId == fundId && p.Ticker == ticker);
@@ -168,7 +183,8 @@ public class TradeService
                 EntryPrice = position.AvgPrice,
                 ExitPrice = price,
                 Pnl = pnl,
-                Side = position.Side
+                Side = position.Side,
+                ClosedAt = executedAt
             });
         }
 
@@ -176,11 +192,15 @@ public class TradeService
         {
             _db.Positions.Remove(position);
         }
-        else if (Math.Sign(newQuantity) == Math.Sign(oldQuantity))
+        else if (Math.Sign(oldQuantity) == Math.Sign(signedQuantity))
         {
             position.AvgPrice = ((Math.Abs(oldQuantity) * position.AvgPrice) +
                                  (Math.Abs(signedQuantity) * price)) /
                                 (Math.Abs(oldQuantity) + Math.Abs(signedQuantity));
+            position.Quantity = newQuantity;
+        }
+        else if (Math.Sign(newQuantity) == Math.Sign(oldQuantity))
+        {
             position.Quantity = newQuantity;
         }
         else

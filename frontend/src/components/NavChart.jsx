@@ -13,6 +13,8 @@ export default function NavChart({ navData }) {
     );
   }
 
+  const initialEquity = navData[0]?.totalEquity;
+
   return (
     <ResponsiveContainer width="100%" height={280}>
       <AreaChart data={navData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
@@ -53,12 +55,14 @@ export default function NavChart({ navData }) {
           strokeWidth={2}
           fill="url(#navGrad)"
         />
-        <ReferenceLine
-          y={1000000}
-          stroke="var(--text-dim)"
-          strokeDasharray="4 4"
-          label={{ value: 'Inicio', fill: 'var(--text-dim)', fontSize: 10 }}
-        />
+        {initialEquity != null && (
+          <ReferenceLine
+            y={initialEquity}
+            stroke="var(--text-dim)"
+            strokeDasharray="4 4"
+            label={{ value: 'Inicio', fill: 'var(--text-dim)', fontSize: 10 }}
+          />
+        )}
       </AreaChart>
     </ResponsiveContainer>
   );

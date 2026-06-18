@@ -4,13 +4,6 @@ import { fmtPct } from '../lib/format';
 export default function ExposureChart({ exposure }) {
   if (!exposure) return null;
 
-  const classData = exposure.byClass.map((c) => ({
-    name: c.label,
-    long: c.longValue > 0 ? (c.longValue / (exposure.grossExposure > 0 ? c.longValue + c.shortValue + (exposure.cashWeight * (c.longValue + c.shortValue) / exposure.grossExposure) : 1)) : 0,
-    longPct: c.netWeight * 100,
-    grossPct: c.grossWeight * 100,
-  }));
-
   // Simpler: just use netWeight directly
   const chartData = exposure.byClass
     .filter((c) => c.grossWeight > 0.001)

@@ -182,8 +182,11 @@ export default function App() {
   const currentFund = funds.find((f) => f.id === activeFund);
 
   const allocationData = positions
-    .filter((p) => p.weight != null && p.weight > 0)
-    .map((p) => ({ name: p.ticker, value: Math.abs(p.weight * 100) }))
+    .filter((p) => p.weight != null && Math.abs(p.weight) > 0)
+    .map((p) => ({
+      name: p.side === 'short' ? `${p.ticker} Short` : p.ticker,
+      value: Math.abs(p.weight * 100),
+    }))
     .sort((a, b) => b.value - a.value);
 
   const cashWeight = currentFund ? (currentFund.cashBalance / currentFund.totalEquity) * 100 : 0;
@@ -302,7 +305,7 @@ export default function App() {
               <Stat label="Patrimonio" value={fmtBRL(currentFund.totalEquity)} />
               <Stat label="Valor da Cota" value={fmtNum(currentFund.shareValue)}
                 color={currentFund.shareValue >= 1 ? 'var(--green)' : 'var(--red)'} />
-              <Stat label="Retorno Dia" value={fmtPct(currentFund.dailyReturn)}
+              <Stat label="Retorno Atual" value={fmtPct(currentFund.dailyReturn)}
                 color={currentFund.dailyReturn >= 0 ? 'var(--green)' : 'var(--red)'} />
               <Stat label="Caixa" value={fmtBRL(currentFund.cashBalance)} />
               <Stat label="Posicoes" value={currentFund.positionCount} color="var(--accent)" />

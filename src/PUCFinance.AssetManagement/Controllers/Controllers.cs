@@ -20,6 +20,7 @@ public class FundsController : ControllerBase
     private readonly AppDbContext _db;
     private readonly ExportService _export;
     private readonly FundAccessService _fundAccess;
+    private const double AnnualRiskFreeRate = 0.1450;
 
     public FundsController(AppDbContext db, ExportService export, FundAccessService fundAccess)
     {
@@ -39,12 +40,7 @@ public class FundsController : ControllerBase
 
         foreach (var fund in funds)
         {
-            var latestNav = await _db.NavHistory
-                .Where(n => n.FundId == fund.Id)
-                .OrderByDescending(n => n.Date)
-                .FirstOrDefaultAsync();
-
-            var positionCount = await _db.Positions.CountAsync(p => p.FundId == fund.Id);
+            var snapshot = await GetRealtimeSnapshotAsync(fund.Id, fund);
 
             summaries.Add(new FundSummaryResponse(
                 Id: fund.Id,
@@ -52,15 +48,105 @@ public class FundsController : ControllerBase
                 Strategy: fund.Strategy,
                 TeamId: fund.TeamId,
                 TeamName: fund.Team?.Name,
-                TotalEquity: latestNav?.TotalEquity ?? fund.InitialCapital,
-                ShareValue: latestNav?.ShareValue ?? 1.0,
-                DailyReturn: latestNav?.DailyReturn ?? 0,
-                CashBalance: latestNav?.CashBalance ?? fund.InitialCapital,
-                PositionCount: positionCount
+                TotalEquity: snapshot.TotalEquity,
+                ShareValue: snapshot.ShareValue,
+                DailyReturn: snapshot.DailyReturn,
+                CashBalance: snapshot.CashBalance,
+                PositionCount: snapshot.Positions.Count
             ));
         }
 
         return Ok(summaries);
+    }
+
+    private sealed record RealtimeFundSnapshot(
+        Fund Fund,
+        string Date,
+        List<Position> Positions,
+        double CashBalance,
+        double TotalMarketValue,
+        double TotalEquity,
+        double ShareValue,
+        NavHistory? PreviousCloseNav,
+        double BaseShareValue,
+        double DailyReturn);
+
+    private async Task<RealtimeFundSnapshot> GetRealtimeSnapshotAsync(int fundId, Fund? fund = null)
+    {
+        fund ??= await _db.Funds.FindAsync(fundId)
+            ?? throw new InvalidOperationException($"Fundo {fundId} nao encontrado");
+
+        var today = DateTime.Today.ToString("yyyy-MM-dd");
+        var latestNav = await _db.NavHistory
+            .Where(n => n.FundId == fundId)
+            .OrderByDescending(n => n.Date)
+            .FirstOrDefaultAsync();
+        var previousCloseNav = await _db.NavHistory
+            .Where(n => n.FundId == fundId && string.Compare(n.Date, today) < 0)
+            .OrderByDescending(n => n.Date)
+            .FirstOrDefaultAsync();
+        var positions = await _db.Positions
+            .Where(p => p.FundId == fundId)
+            .ToListAsync();
+        var cash = await _db.Cash.FindAsync(fundId);
+        var cashBalance = cash?.Balance ?? latestNav?.CashBalance ?? fund.InitialCapital;
+        var totalMarketValue = positions.Sum(CurrentMarketValue);
+        var totalEquity = cashBalance + totalMarketValue;
+        var shareValue = fund.TotalShares > 0
+            ? totalEquity / fund.TotalShares
+            : latestNav?.ShareValue ?? 0;
+        var baseShareValue = previousCloseNav?.ShareValue ?? InitialShareValue(fund);
+        var dailyReturn = baseShareValue > 0 ? (shareValue / baseShareValue) - 1 : 0;
+
+        return new RealtimeFundSnapshot(
+            fund,
+            today,
+            positions,
+            cashBalance,
+            totalMarketValue,
+            totalEquity,
+            shareValue,
+            previousCloseNav,
+            baseShareValue,
+            dailyReturn);
+    }
+
+    private static double InitialShareValue(Fund fund)
+    {
+        return fund.TotalShares > 0 ? fund.InitialCapital / fund.TotalShares : 0;
+    }
+
+    private static double CurrentMarketValue(Position position)
+    {
+        if (position.MarketValue.HasValue)
+            return position.MarketValue.Value;
+
+        var price = position.CurrentPrice ?? position.AvgPrice;
+        return position.Quantity * price;
+    }
+
+    private static double CurrentUnrealizedPnl(Position position)
+    {
+        if (position.UnrealizedPnl.HasValue)
+            return position.UnrealizedPnl.Value;
+
+        var price = position.CurrentPrice ?? position.AvgPrice;
+        return (price - position.AvgPrice) * position.Quantity;
+    }
+
+    private static void UpsertRealtimeNavPoint(List<NavPointResponse> navs, RealtimeFundSnapshot snapshot)
+    {
+        var realtimePoint = new NavPointResponse(
+            snapshot.Date,
+            snapshot.TotalEquity,
+            snapshot.ShareValue,
+            snapshot.DailyReturn);
+
+        var todayIndex = navs.FindIndex(n => n.Date == snapshot.Date);
+        if (todayIndex >= 0)
+            navs[todayIndex] = realtimePoint;
+        else
+            navs.Add(realtimePoint);
     }
 
     /// <summary>POST /api/funds — Cria um novo fundo</summary>
@@ -109,26 +195,17 @@ public class FundsController : ControllerBase
         var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
-        var positions = await _db.Positions
-            .Where(p => p.FundId == id)
-            .ToListAsync();
+        var snapshot = await GetRealtimeSnapshotAsync(id, fund);
 
-        var latestNav = await _db.NavHistory
-            .Where(n => n.FundId == id)
-            .OrderByDescending(n => n.Date)
-            .FirstOrDefaultAsync();
-
-        var totalEquity = latestNav?.TotalEquity ?? fund.InitialCapital;
-
-        var result = positions.Select(p => new PositionResponse(
+        var result = snapshot.Positions.Select(p => new PositionResponse(
             Ticker: p.Ticker,
             Side: p.Side,
             Quantity: p.Quantity,
             AvgPrice: p.AvgPrice,
             CurrentPrice: p.CurrentPrice,
-            MarketValue: p.MarketValue,
-            UnrealizedPnl: p.UnrealizedPnl,
-            Weight: totalEquity > 0 ? (p.MarketValue ?? 0) / totalEquity : null
+            MarketValue: CurrentMarketValue(p),
+            UnrealizedPnl: CurrentUnrealizedPnl(p),
+            Weight: snapshot.TotalEquity > 0 ? CurrentMarketValue(p) / snapshot.TotalEquity : null
         )).ToList();
 
         return Ok(result);
@@ -138,14 +215,18 @@ public class FundsController : ControllerBase
     [HttpGet("{id}/nav")]
     public async Task<ActionResult<List<NavPointResponse>>> GetNav(int id)
     {
-        if (!await _fundAccess.CanAccessFundAsync(id))
-            return NotFound();
+        var fund = await _fundAccess.FindVisibleFundAsync(id);
+        if (fund == null) return NotFound();
+
+        var snapshot = await GetRealtimeSnapshotAsync(id, fund);
 
         var navs = await _db.NavHistory
             .Where(n => n.FundId == id)
             .OrderBy(n => n.Date)
             .Select(n => new NavPointResponse(n.Date, n.TotalEquity, n.ShareValue, n.DailyReturn))
             .ToListAsync();
+
+        UpsertRealtimeNavPoint(navs, snapshot);
 
         return Ok(navs);
     }
@@ -154,22 +235,31 @@ public class FundsController : ControllerBase
     [HttpGet("{id}/metrics")]
     public async Task<ActionResult<List<MetricsResponse>>> GetMetrics(int id)
     {
-        if (!await _fundAccess.CanAccessFundAsync(id))
-            return NotFound();
+        var fund = await _fundAccess.FindVisibleFundAsync(id);
+        if (fund == null) return NotFound();
 
-        var latestDate = await _db.Metrics
+        var snapshot = await GetRealtimeSnapshotAsync(id, fund);
+        var navs = await _db.NavHistory
+            .Where(n => n.FundId == id)
+            .OrderBy(n => n.Date)
+            .ToListAsync();
+
+        var latestMetricDate = await _db.Metrics
             .Where(m => m.FundId == id)
             .MaxAsync(m => (string?)m.Date);
 
-        if (latestDate == null) return Ok(new List<MetricsResponse>());
+        var storedMetrics = latestMetricDate == null
+            ? new Dictionary<string, Metric>()
+            : await _db.Metrics
+                .Where(m => m.FundId == id && m.Date == latestMetricDate)
+                .ToDictionaryAsync(m => m.Period);
 
-        var metrics = await _db.Metrics
-            .Where(m => m.FundId == id && m.Date == latestDate)
-            .Select(m => new MetricsResponse(
-                m.Period, m.CumulativeReturn, m.AnnualizedReturn,
-                m.Volatility, m.SharpeRatio, m.MaxDrawdown,
-                m.Alpha, m.Beta, m.BenchmarkName))
-            .ToListAsync();
+        var metrics = new List<MetricsResponse>
+        {
+            BuildRealtimeMetric("inception", null, navs, snapshot, storedMetrics.GetValueOrDefault("inception")),
+            BuildRealtimeMetric("mtd", DateTime.Today.ToString("yyyy-MM-01"), navs, snapshot, storedMetrics.GetValueOrDefault("mtd")),
+            BuildRealtimeMetric("ytd", DateTime.Today.ToString("yyyy-01-01"), navs, snapshot, storedMetrics.GetValueOrDefault("ytd"))
+        };
 
         return Ok(metrics);
     }
@@ -181,10 +271,8 @@ public class FundsController : ControllerBase
         var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
-        var positions = await _db.Positions.Where(p => p.FundId == id).ToListAsync();
-        var latestNav = await _db.NavHistory
-            .Where(n => n.FundId == id).OrderByDescending(n => n.Date).FirstOrDefaultAsync();
-        var totalEquity = latestNav?.TotalEquity ?? fund.InitialCapital;
+        var snapshot = await GetRealtimeSnapshotAsync(id, fund);
+        var positions = snapshot.Positions;
 
         var result = new List<AssetPerformanceResponse>();
 
@@ -194,10 +282,12 @@ public class FundsController : ControllerBase
                 .Where(r => r.FundId == id && r.Ticker == pos.Ticker)
                 .SumAsync(r => (double?)r.Pnl) ?? 0;
 
-            var totalPnl = (pos.UnrealizedPnl ?? 0) + realizedTotal;
+            var marketValue = CurrentMarketValue(pos);
+            var unrealizedPnl = CurrentUnrealizedPnl(pos);
+            var totalPnl = unrealizedPnl + realizedTotal;
             var costBasis = Math.Abs(pos.Quantity) * pos.AvgPrice;
             double? returnPct = costBasis > 0 ? totalPnl / costBasis : null;
-            var weight = totalEquity > 0 ? (pos.MarketValue ?? 0) / totalEquity : 0;
+            var weight = snapshot.TotalEquity > 0 ? marketValue / snapshot.TotalEquity : 0;
 
             var dailyHistory = await _db.PositionHistory
                 .Where(h => h.FundId == id && h.Ticker == pos.Ticker)
@@ -206,7 +296,8 @@ public class FundsController : ControllerBase
                     h.Date, h.CurrentPrice, h.DailyReturn, h.Contribution, h.Weight))
                 .ToListAsync();
 
-            var totalContribution = dailyHistory.Sum(d => d.Contribution ?? 0);
+            var totalContribution = CompoundReturns(
+                dailyHistory.OrderBy(d => d.Date).Select(d => d.Contribution ?? 0));
 
             result.Add(new AssetPerformanceResponse(
                 Ticker: pos.Ticker,
@@ -214,8 +305,8 @@ public class FundsController : ControllerBase
                 Quantity: pos.Quantity,
                 AvgPrice: pos.AvgPrice,
                 CurrentPrice: pos.CurrentPrice,
-                MarketValue: pos.MarketValue,
-                UnrealizedPnl: pos.UnrealizedPnl,
+                MarketValue: marketValue,
+                UnrealizedPnl: unrealizedPnl,
                 RealizedPnl: realizedTotal,
                 TotalPnl: totalPnl,
                 ReturnPct: returnPct,
@@ -255,13 +346,10 @@ public class FundsController : ControllerBase
         var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
-        var positions = await _db.Positions.Where(p => p.FundId == id).ToListAsync();
-        var latestNav = await _db.NavHistory
-            .Where(n => n.FundId == id).OrderByDescending(n => n.Date).FirstOrDefaultAsync();
-        var cash = await _db.Cash.FindAsync(id);
-
-        var totalEquity = latestNav?.TotalEquity ?? fund.InitialCapital;
-        var cashBalance = cash?.Balance ?? fund.InitialCapital;
+        var snapshot = await GetRealtimeSnapshotAsync(id, fund);
+        var positions = snapshot.Positions;
+        var totalEquity = snapshot.TotalEquity;
+        var cashBalance = snapshot.CashBalance;
 
         // Classifica cada posicao
         var classMap = new Dictionary<string, (string Label, double Long, double Short, int Count)>();
@@ -276,7 +364,7 @@ public class FundsController : ControllerBase
         {
             var asset = await _db.Assets.FindAsync(pos.Ticker);
             var assetClass = asset?.AssetClass ?? "unknown";
-            var mv = pos.MarketValue ?? 0;
+            var mv = CurrentMarketValue(pos);
 
             if (!classMap.ContainsKey(assetClass))
                 classMap[assetClass] = (labels.GetValueOrDefault(assetClass, assetClass), 0, 0, 0);
@@ -319,6 +407,8 @@ public class FundsController : ControllerBase
         var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
+        var snapshot = await GetRealtimeSnapshotAsync(id, fund);
+        var liveByClass = await GetRealtimeClassContributionsAsync(snapshot);
         var results = new List<ReturnByClassResponse>();
         var today = DateTime.Today.ToString("yyyy-MM-dd");
         var labels = new Dictionary<string, string>
@@ -336,23 +426,50 @@ public class FundsController : ControllerBase
         })
         {
             var history = await _db.PositionHistory
-                .Where(h => h.FundId == id && string.Compare(h.Date, fromDate) >= 0)
+                .Where(h => h.FundId == id && string.Compare(h.Date, fromDate) >= 0 && h.Date != today)
                 .ToListAsync();
 
-            if (history.Count == 0) continue;
+            if (history.Count == 0 && liveByClass.Count == 0) continue;
 
-            // Agrupa contribuicao por classe
-            var byClass = new Dictionary<string, double>();
+            var tickers = history.Select(h => h.Ticker).Distinct().ToList();
+            var assetClasses = await _db.Assets
+                .Where(a => tickers.Contains(a.Ticker))
+                .ToDictionaryAsync(a => a.Ticker, a => a.AssetClass);
+
+            var dailyByClass = new Dictionary<string, Dictionary<string, double>>();
+            var dailyTotal = new Dictionary<string, double>();
 
             foreach (var h in history)
             {
-                var asset = await _db.Assets.FindAsync(h.Ticker);
-                var assetClass = asset?.AssetClass ?? "unknown";
-                if (!byClass.ContainsKey(assetClass)) byClass[assetClass] = 0;
-                byClass[assetClass] += h.Contribution ?? 0;
+                var assetClass = assetClasses.GetValueOrDefault(h.Ticker) ?? "unknown";
+                var contribution = h.Contribution ?? 0;
+
+                if (!dailyByClass.ContainsKey(assetClass))
+                    dailyByClass[assetClass] = new Dictionary<string, double>();
+
+                dailyByClass[assetClass][h.Date] =
+                    dailyByClass[assetClass].GetValueOrDefault(h.Date) + contribution;
+                dailyTotal[h.Date] = dailyTotal.GetValueOrDefault(h.Date) + contribution;
             }
 
-            var totalReturn = byClass.Values.Sum();
+            if (string.Compare(today, fromDate) >= 0)
+            {
+                foreach (var kv in liveByClass)
+                {
+                    if (!dailyByClass.ContainsKey(kv.Key))
+                        dailyByClass[kv.Key] = new Dictionary<string, double>();
+
+                    dailyByClass[kv.Key][today] =
+                        dailyByClass[kv.Key].GetValueOrDefault(today) + kv.Value;
+                    dailyTotal[today] = dailyTotal.GetValueOrDefault(today) + kv.Value;
+                }
+            }
+
+            var byClass = dailyByClass.ToDictionary(
+                kv => kv.Key,
+                kv => CompoundReturns(kv.Value.OrderBy(d => d.Key).Select(d => d.Value)));
+
+            var totalReturn = CompoundReturns(dailyTotal.OrderBy(d => d.Key).Select(d => d.Value));
 
             results.Add(new ReturnByClassResponse(
                 Period: period,
@@ -384,29 +501,32 @@ public class FundsController : ControllerBase
         if (navs.Count == 0)
             return Ok(new CdiBenchmarkResponse(0, 0, 0, "inception", new()));
 
-        var startDate = navs.First().Date;
-        var firstShareValue = navs.First().ShareValue;
+        var snapshot = await GetRealtimeSnapshotAsync(id, fund);
+        var realtimeNavs = UpsertRealtimeNavHistory(navs, snapshot);
+        var startDate = realtimeNavs.First().Date;
+        var firstShareValue = navs.FirstOrDefault()?.ShareValue ?? InitialShareValue(fund);
 
         var cdis = await _db.Benchmarks
-            .Where(b => b.Name == "CDI" && string.Compare(b.Date, startDate) >= 0)
+            .Where(b => b.Name == "CDI" && string.Compare(b.Date, startDate) > 0)
             .OrderBy(b => b.Date)
             .ToListAsync();
 
         // CDI acumulado desde o inicio do fundo
-        var cdiCumulative = 1.0;
-        var cdiByDate = new Dictionary<string, double>();
+        var cdiIndex = 0;
+        var cdiCumulativeFactor = 1.0;
+        var latestCdiCumulative = 0.0;
 
-        foreach (var cdi in cdis)
+        var series = realtimeNavs.Select(n =>
         {
-            cdiCumulative *= (1 + (cdi.DailyReturn ?? 0));
-            cdiByDate[cdi.Date] = cdiCumulative - 1;
-        }
+            while (cdiIndex < cdis.Count && string.Compare(cdis[cdiIndex].Date, n.Date) <= 0)
+            {
+                cdiCumulativeFactor *= 1 + (cdis[cdiIndex].DailyReturn ?? 0);
+                latestCdiCumulative = cdiCumulativeFactor - 1;
+                cdiIndex++;
+            }
 
-        var series = navs.Select(n =>
-        {
             var fundCum = firstShareValue > 0 ? (n.ShareValue / firstShareValue) - 1 : 0;
-            var cdiCum = cdiByDate.GetValueOrDefault(n.Date, 0);
-            return new CdiComparisonPoint(n.Date, fundCum, cdiCum);
+            return new CdiComparisonPoint(n.Date, fundCum, latestCdiCumulative);
         }).ToList();
 
         var lastFund = series.Last().FundCumulative;
@@ -419,6 +539,209 @@ public class FundsController : ControllerBase
             Period: "inception",
             Series: series
         ));
+    }
+
+    private static double CompoundReturns(IEnumerable<double> returns)
+    {
+        var factor = 1.0;
+        foreach (var value in returns)
+        {
+            factor *= 1 + value;
+        }
+
+        return factor - 1;
+    }
+
+    private static List<NavHistory> UpsertRealtimeNavHistory(
+        List<NavHistory> navs,
+        RealtimeFundSnapshot snapshot)
+    {
+        var result = navs
+            .Where(n => n.Date != snapshot.Date)
+            .ToList();
+
+        result.Add(new NavHistory
+        {
+            FundId = snapshot.Fund.Id,
+            Date = snapshot.Date,
+            TotalEquity = snapshot.TotalEquity,
+            TotalShares = snapshot.Fund.TotalShares,
+            ShareValue = snapshot.ShareValue,
+            DailyReturn = snapshot.DailyReturn,
+            CashBalance = snapshot.CashBalance
+        });
+
+        return result.OrderBy(n => n.Date).ToList();
+    }
+
+    private static MetricsResponse BuildRealtimeMetric(
+        string period,
+        string? periodStart,
+        List<NavHistory> closedNavs,
+        RealtimeFundSnapshot snapshot,
+        Metric? storedMetric)
+    {
+        var orderedNavs = closedNavs.OrderBy(n => n.Date).ToList();
+        var baseShareValue = GetMetricBaseShareValue(periodStart, orderedNavs, snapshot);
+        var shareValues = BuildMetricShareValues(periodStart, orderedNavs, snapshot, baseShareValue);
+        var returns = BuildMetricReturns(periodStart, orderedNavs, snapshot);
+        var cumulativeReturn = baseShareValue > 0 ? (snapshot.ShareValue / baseShareValue) - 1 : 0;
+        var annualizedReturn = AnnualizedReturn(returns, cumulativeReturn);
+        double? volatility = returns.Count >= 2 ? Volatility(returns) : null;
+        double? sharpe = volatility.HasValue && volatility.Value != 0
+            ? (annualizedReturn - AnnualRiskFreeRate) / volatility.Value
+            : null;
+        var maxDrawdown = MaxDrawdown(shareValues);
+
+        return new MetricsResponse(
+            Period: period,
+            CumulativeReturn: cumulativeReturn,
+            AnnualizedReturn: annualizedReturn,
+            Volatility: volatility,
+            SharpeRatio: sharpe,
+            MaxDrawdown: maxDrawdown,
+            Alpha: storedMetric?.Alpha,
+            Beta: storedMetric?.Beta,
+            BenchmarkName: storedMetric?.BenchmarkName);
+    }
+
+    private static double GetMetricBaseShareValue(
+        string? periodStart,
+        List<NavHistory> navs,
+        RealtimeFundSnapshot snapshot)
+    {
+        if (periodStart == null)
+            return InitialShareValue(snapshot.Fund);
+
+        var previousNav = navs
+            .Where(n => string.Compare(n.Date, periodStart) < 0)
+            .LastOrDefault();
+        if (previousNav != null)
+            return previousNav.ShareValue;
+
+        return InitialShareValue(snapshot.Fund);
+    }
+
+    private static List<double> BuildMetricShareValues(
+        string? periodStart,
+        List<NavHistory> navs,
+        RealtimeFundSnapshot snapshot,
+        double baseShareValue)
+    {
+        var values = new List<double> { baseShareValue };
+        values.AddRange(navs
+            .Where(n => n.Date != snapshot.Date)
+            .Where(n => periodStart == null || string.Compare(n.Date, periodStart) >= 0)
+            .Select(n => n.ShareValue));
+        values.Add(snapshot.ShareValue);
+        return values;
+    }
+
+    private static List<double> BuildMetricReturns(
+        string? periodStart,
+        List<NavHistory> navs,
+        RealtimeFundSnapshot snapshot)
+    {
+        var returns = navs
+            .Where(n => n.Date != snapshot.Date)
+            .Where(n => periodStart == null || string.Compare(n.Date, periodStart) >= 0)
+            .Where(n => n.DailyReturn.HasValue)
+            .Select(n => n.DailyReturn!.Value)
+            .ToList();
+
+        if (periodStart == null || string.Compare(snapshot.Date, periodStart) >= 0)
+            returns.Add(snapshot.DailyReturn);
+
+        return returns;
+    }
+
+    private static double AnnualizedReturn(List<double> returns, double cumulativeReturn)
+    {
+        if (returns.Count == 0) return 0;
+        if (cumulativeReturn <= -1) return -1;
+        return Math.Pow(1 + cumulativeReturn, 252.0 / returns.Count) - 1;
+    }
+
+    private static double Volatility(List<double> returns)
+    {
+        if (returns.Count < 2) return 0;
+        var mean = returns.Average();
+        var variance = returns.Sum(r => Math.Pow(r - mean, 2)) / (returns.Count - 1);
+        return Math.Sqrt(variance) * Math.Sqrt(252);
+    }
+
+    private static double MaxDrawdown(List<double> shareValues)
+    {
+        if (shareValues.Count < 2) return 0;
+
+        var peak = shareValues.First();
+        var maxDrawdown = 0.0;
+        foreach (var shareValue in shareValues)
+        {
+            if (shareValue > peak)
+                peak = shareValue;
+
+            if (peak <= 0) continue;
+
+            var drawdown = (peak - shareValue) / peak;
+            if (drawdown > maxDrawdown)
+                maxDrawdown = drawdown;
+        }
+
+        return -maxDrawdown;
+    }
+
+    private async Task<Dictionary<string, double>> GetRealtimeClassContributionsAsync(
+        RealtimeFundSnapshot snapshot)
+    {
+        var baseEquity = snapshot.PreviousCloseNav?.TotalEquity ?? snapshot.Fund.InitialCapital;
+        if (baseEquity <= 0)
+            return new Dictionary<string, double>();
+
+        var previousHistory = await _db.PositionHistory
+            .Where(h => h.FundId == snapshot.Fund.Id && string.Compare(h.Date, snapshot.Date) < 0)
+            .ToListAsync();
+        var previousByTicker = previousHistory
+            .GroupBy(h => h.Ticker)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(h => h.Date).First());
+
+        var realizedToday = await _db.RealizedPnl
+            .Where(r => r.FundId == snapshot.Fund.Id && r.ClosedAt.StartsWith(snapshot.Date))
+            .GroupBy(r => r.Ticker)
+            .Select(g => new { Ticker = g.Key, Pnl = g.Sum(r => r.Pnl) })
+            .ToDictionaryAsync(x => x.Ticker, x => x.Pnl);
+
+        var tickers = snapshot.Positions
+            .Select(p => p.Ticker)
+            .Concat(realizedToday.Keys)
+            .Distinct()
+            .ToList();
+        var assetClasses = await _db.Assets
+            .Where(a => tickers.Contains(a.Ticker))
+            .ToDictionaryAsync(a => a.Ticker, a => a.AssetClass);
+
+        var contributions = new Dictionary<string, double>();
+        foreach (var position in snapshot.Positions)
+        {
+            var previousUnrealized = previousByTicker.GetValueOrDefault(position.Ticker)?.UnrealizedPnl ?? 0;
+            var realized = realizedToday.GetValueOrDefault(position.Ticker);
+            var pnlDelta = CurrentUnrealizedPnl(position) - previousUnrealized + realized;
+            var assetClass = assetClasses.GetValueOrDefault(position.Ticker) ?? "unknown";
+            contributions[assetClass] = contributions.GetValueOrDefault(assetClass) + (pnlDelta / baseEquity);
+        }
+
+        foreach (var kv in realizedToday)
+        {
+            if (snapshot.Positions.Any(p => p.Ticker == kv.Key))
+                continue;
+
+            var previousUnrealized = previousByTicker.GetValueOrDefault(kv.Key)?.UnrealizedPnl ?? 0;
+            var pnlDelta = kv.Value - previousUnrealized;
+            var assetClass = assetClasses.GetValueOrDefault(kv.Key) ?? "unknown";
+            contributions[assetClass] = contributions.GetValueOrDefault(assetClass) + (pnlDelta / baseEquity);
+        }
+
+        return contributions;
     }
 }
 
@@ -518,7 +841,7 @@ public class TradesController : ControllerBase
         }
     }
 
-    /// <summary>DELETE /api/trades/{id} — Deleta um trade e reverte posicao/caixa</summary>
+    /// <summary>Dispara o batch automatico depois de uma mudanca em trades.</summary>
     private void QueuePostTradeBatch(int fundId, int tradeId)
     {
         _ = Task.Run(async () =>
@@ -562,6 +885,7 @@ public class TradesController : ControllerBase
                 return NotFound(new { error = "Trade nao encontrado" });
 
             await _tradeService.DeleteTradeAsync(id);
+            QueuePostTradeBatch(fundId.Value, id);
             return Ok(new { message = "Trade deletado com sucesso" });
         }
         catch (Exception ex)
