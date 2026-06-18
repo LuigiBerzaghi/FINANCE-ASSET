@@ -34,7 +34,7 @@ export default function FundMembers({ data }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr>
-                {['Nome', 'Email', 'Status'].map((header) => (
+                {['Nome', 'Email'].map((header) => (
                   <th key={header} style={{
                     padding: '8px 10px',
                     textAlign: 'left',
@@ -57,16 +57,6 @@ export default function FundMembers({ data }) {
                   </td>
                   <td style={{ padding: '10px', color: 'var(--text-muted)' }}>
                     {member.email}
-                  </td>
-                  <td style={{ padding: '10px' }}>
-                    <span style={{
-                      color: member.isActive ? 'var(--green)' : 'var(--red)',
-                      fontSize: 10,
-                      fontWeight: 600,
-                      textTransform: 'uppercase',
-                    }}>
-                      {member.isActive ? 'Ativo' : 'Inativo'}
-                    </span>
                   </td>
                 </tr>
               ))}
