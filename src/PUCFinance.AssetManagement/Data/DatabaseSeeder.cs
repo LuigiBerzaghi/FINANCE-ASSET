@@ -1,6 +1,7 @@
 using System.Data;
 using Microsoft.EntityFrameworkCore;
 using PUCFinance.AssetManagement.Models;
+using PUCFinance.AssetManagement.Services;
 
 namespace PUCFinance.AssetManagement.Data;
 
@@ -234,11 +235,13 @@ public static class DatabaseSeeder
 
     private static async Task SeedUsersAsync(AppDbContext db)
     {
-        await MigrateLegacyLeaderAsync(db);
-        await AddUserIfMissingAsync(db, Leader.Name, Leader.Email, Leader.PasswordHash, AppRoles.Leader);
+        var passwordService = new PasswordService();
+        await MigrateLegacyLeaderAsync(db, passwordService);
+        await EnsureLeaderAsync(db, passwordService);
 
+        // Gestores entram so com o login, sem senha
         foreach (var manager in Managers)
-            await AddUserIfMissingAsync(db, manager.Name, manager.Email, manager.PasswordHash, AppRoles.Manager);
+            await AddUserIfMissingAsync(db, manager.Name, manager.Email, string.Empty, AppRoles.Manager);
 
         await db.SaveChangesAsync();
 
@@ -266,7 +269,7 @@ public static class DatabaseSeeder
     /// Converte o lider do MVP (lider@pucfinance.local / senha publica) no lider real,
     /// preservando o mesmo usuario.
     /// </summary>
-    private static async Task MigrateLegacyLeaderAsync(AppDbContext db)
+    private static async Task MigrateLegacyLeaderAsync(AppDbContext db, PasswordService passwordService)
     {
         var legacyLeader = await db.Users.FirstOrDefaultAsync(u => u.Email == LegacyLeaderEmail);
         if (legacyLeader == null || await db.Users.AnyAsync(u => u.Email == Leader.Email))
@@ -274,9 +277,24 @@ public static class DatabaseSeeder
 
         legacyLeader.Name = Leader.Name;
         legacyLeader.Email = Leader.Email;
-        legacyLeader.PasswordHash = Leader.PasswordHash;
+        legacyLeader.PasswordHash = passwordService.HashPassword(LeaderPassword);
         legacyLeader.Role = AppRoles.Leader;
         await db.SaveChangesAsync();
+    }
+
+    private static async Task EnsureLeaderAsync(AppDbContext db, PasswordService passwordService)
+    {
+        var leader = await db.Users.FirstOrDefaultAsync(u => u.Email == Leader.Email);
+        if (leader == null)
+        {
+            await AddUserIfMissingAsync(db, Leader.Name, Leader.Email,
+                passwordService.HashPassword(LeaderPassword), AppRoles.Leader);
+            return;
+        }
+
+        // Senha do lider da versao anterior volta a ser a senha padrao
+        if (leader.PasswordHash == SupersededLeaderPasswordHash)
+            leader.PasswordHash = passwordService.HashPassword(LeaderPassword);
     }
 
     private static async Task AddUserIfMissingAsync(
@@ -308,22 +326,23 @@ public static class DatabaseSeeder
         "gamma@pucfinance.local"
     ];
 
-    private sealed record SeedManager(string Name, string Email, string PasswordHash);
+    private sealed record SeedUser(string Name, string Email);
 
     private const string LegacyLeaderEmail = "lider@pucfinance.local";
-    private static readonly SeedManager Leader =
-        new("Gustavo", "gustavo@pucfinance", "pbkdf2$100000$9BUCxwF2kPYOHPLgEZvEVg==$m48eT9Osy90xmk9suQ8T9eHVZa9xCkkutGP8mPSWpcA=");
+    private const string LeaderPassword = "Admin@123";
+    private const string SupersededLeaderPasswordHash =
+        "pbkdf2$100000$9BUCxwF2kPYOHPLgEZvEVg==$m48eT9Osy90xmk9suQ8T9eHVZa9xCkkutGP8mPSWpcA=";
+    private static readonly SeedUser Leader = new("Gustavo", "gustavo@pucfinance");
 
-    // Senhas iniciais entregues aos gestores fora do repositorio; aqui fica so o hash PBKDF2.
-    private static readonly SeedManager[] Managers =
+    private static readonly SeedUser[] Managers =
     [
-        new("Luigi", "luigi@pucfinance", "pbkdf2$100000$A5i9GC0Cxu6ZZzCNLiTLzA==$XZIHO2rLm9QbuYKOSNsFiyx2QNhzD0nlu4/aFSDjfrk="),
-        new("Braguinha", "braguinha@pucfinance", "pbkdf2$100000$p5uHbp/yeeVA7sACvC5ogw==$t9IYNrM48e9I7qz2oSC60xcA8wqC84lodrblHoeTnFk="),
-        new("Cathe", "cathe@pucfinance", "pbkdf2$100000$Ml19zdjIESJUms1Wnws4Ew==$n6LI1r8DKPI9q1vkCwl/o5UlKe9D3qiYQ659HoECNT8="),
-        new("Italo", "italo@pucfinance", "pbkdf2$100000$RS36kChXX2CiogP+OCWbPg==$1RNWInYXmInWoyhPrbbSBBuh272AobI0O9dp5SCg1+A="),
-        new("Helena", "helena@pucfinance", "pbkdf2$100000$36qO32npJ+e+niYIM9m3fw==$gX3RS4y8aXN8C9nYTkbaz+TpB4k7CSvmgK2xEKBceTg="),
-        new("Bruna", "bruna@pucfinance", "pbkdf2$100000$kv5HQTW5B/nil4vUWR/rdw==$63FGcvi2qNkJE2xtyGe8fSYVhGxqDBgzAGeBP4DM8CE="),
-        new("Thomas", "thomas@pucfinance", "pbkdf2$100000$gZSOrW2ct5GuKrJbh0+e2A==$RQFAGUF964YOU1biVmPBlNEBkpy1qbxbtSHFBGHQAws=")
+        new("Luigi", "luigi@pucfinance"),
+        new("Braguinha", "braguinha@pucfinance"),
+        new("Cathe", "cathe@pucfinance"),
+        new("Italo", "italo@pucfinance"),
+        new("Helena", "helena@pucfinance"),
+        new("Bruna", "bruna@pucfinance"),
+        new("Thomas", "thomas@pucfinance")
     ];
 
     private sealed record SeedFund(string Name, string? Strategy, string TeamName, string[] MemberEmails);

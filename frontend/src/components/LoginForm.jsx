@@ -4,6 +4,7 @@ import { post, setAuthToken } from '../lib/api';
 export default function LoginForm({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [leaderMode, setLeaderMode] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -33,7 +34,7 @@ export default function LoginForm({ onLogin }) {
     setError(null);
 
     try {
-      const data = await post('/auth/login', { email, password });
+      const data = await post('/auth/login', leaderMode ? { email, password } : { email });
       setAuthToken(data.token);
       onLogin?.(data.user);
     } catch (e) {
@@ -41,6 +42,12 @@ export default function LoginForm({ onLogin }) {
     }
 
     setLoading(false);
+  };
+
+  const toggleLeaderMode = () => {
+    setLeaderMode((current) => !current);
+    setPassword('');
+    setError(null);
   };
 
   return (
@@ -71,21 +78,36 @@ export default function LoginForm({ onLogin }) {
           <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>ASSET MANAGEMENT</div>
         </div>
 
-        <div>
-          <label style={labelStyle}>Email</label>
-          <input style={inputStyle} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
-        </div>
+        {leaderMode && (
+          <div style={{ color: 'var(--accent)', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            Admin
+          </div>
+        )}
 
         <div>
-          <label style={labelStyle}>Senha</label>
+          <label style={labelStyle}>Login</label>
           <input
             style={inputStyle}
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="nome@pucfinance"
+            autoComplete="username"
+            autoCapitalize="none"
           />
         </div>
+
+        {leaderMode && (
+          <div>
+            <label style={labelStyle}>Senha</label>
+            <input
+              style={inputStyle}
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </div>
+        )}
 
         <button type="submit" disabled={loading} style={{
           padding: '10px 16px',
@@ -99,6 +121,18 @@ export default function LoginForm({ onLogin }) {
           opacity: loading ? 0.7 : 1,
         }}>
           {loading ? 'Entrando...' : 'Entrar'}
+        </button>
+
+        <button type="button" onClick={toggleLeaderMode} style={{
+          padding: '8px 16px',
+          borderRadius: 4,
+          border: '1px solid var(--border)',
+          background: 'transparent',
+          color: 'var(--text-muted)',
+          cursor: 'pointer',
+          fontSize: 12,
+        }}>
+          {leaderMode ? 'Voltar para login de gestor' : 'Admin'}
         </button>
 
         {error && <div style={{ color: 'var(--red)', fontSize: 12 }}>{error}</div>}

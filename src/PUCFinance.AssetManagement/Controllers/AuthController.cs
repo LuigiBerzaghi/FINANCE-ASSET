@@ -37,7 +37,12 @@ public class AuthController : ControllerBase
         var user = await _db.Users
             .FirstOrDefaultAsync(u => u.Email == email && u.IsActive == 1);
 
-        if (user == null || !_passwords.VerifyPassword(request.Password, user.PasswordHash))
+        if (user == null)
+            return Unauthorized(new { error = "Login nao encontrado" });
+
+        // Gestores entram so com o login; o lider precisa de senha
+        var isLeader = string.Equals(user.Role, AppRoles.Leader, StringComparison.OrdinalIgnoreCase);
+        if (isLeader && !_passwords.VerifyPassword(request.Password ?? string.Empty, user.PasswordHash))
             return Unauthorized(new { error = "Email ou senha invalidos" });
 
         var token = _tokens.IssueToken(user);

@@ -12,7 +12,7 @@ public record CreateFundRequest(
 
 public record LoginRequest(
     string Email,
-    string Password
+    string? Password = null
 );
 
 public record AuthResponse(
