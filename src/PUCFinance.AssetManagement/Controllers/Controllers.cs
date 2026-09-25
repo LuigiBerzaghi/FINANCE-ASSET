@@ -221,7 +221,7 @@ public class FundsController : ControllerBase
 
         var members = fund.TeamId.HasValue
             ? await _db.Users
-                .Where(u => u.TeamId == fund.TeamId.Value)
+                .Where(u => _db.TeamMembers.Any(m => m.TeamId == fund.TeamId.Value && m.UserId == u.Id))
                 .OrderByDescending(u => u.IsActive)
                 .ThenBy(u => u.Name)
                 .Select(u => new FundMemberResponse(

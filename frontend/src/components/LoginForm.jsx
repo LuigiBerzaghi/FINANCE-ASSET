@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { post, setAuthToken } from '../lib/api';
 
 export default function LoginForm({ onLogin }) {
-  const [email, setEmail] = useState('lider@pucfinance.local');
-  const [password, setPassword] = useState('Admin@123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 

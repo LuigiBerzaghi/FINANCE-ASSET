@@ -25,9 +25,7 @@ public record AuthUserResponse(
     int Id,
     string Name,
     string Email,
-    string Role,
-    int? TeamId,
-    string? TeamName
+    string Role
 );
 
 public record TeamResponse(

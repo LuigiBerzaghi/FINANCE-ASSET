@@ -21,11 +21,11 @@ public class FundAccessService
         if (_currentUser.IsLeader)
             return query;
 
-        if (!_currentUser.TeamId.HasValue)
+        if (!_currentUser.UserId.HasValue)
             return query.Where(f => false);
 
-        var teamId = _currentUser.TeamId.Value;
-        return query.Where(f => f.TeamId == teamId);
+        var userId = _currentUser.UserId.Value;
+        return query.Where(f => _db.TeamMembers.Any(m => m.UserId == userId && m.TeamId == f.TeamId));
     }
 
     public Task<Fund?> FindVisibleFundAsync(int fundId)

@@ -9,6 +9,7 @@ public class AppDbContext : DbContext
 
     public DbSet<Team> Teams => Set<Team>();
     public DbSet<AppUser> Users => Set<AppUser>();
+    public DbSet<TeamMember> TeamMembers => Set<TeamMember>();
     public DbSet<Fund> Funds => Set<Fund>();
     public DbSet<Position> Positions => Set<Position>();
     public DbSet<Trade> Trades => Set<Trade>();
@@ -49,6 +50,17 @@ public class AppDbContext : DbContext
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.HasIndex(x => x.Email).IsUnique();
             e.HasOne(x => x.Team).WithMany().HasForeignKey(x => x.TeamId);
+        });
+
+        // TeamMember (usuario pode participar de varios times)
+        modelBuilder.Entity<TeamMember>(e =>
+        {
+            e.ToTable("team_members");
+            e.HasKey(x => new { x.TeamId, x.UserId });
+            e.Property(x => x.TeamId).HasColumnName("team_id");
+            e.Property(x => x.UserId).HasColumnName("user_id");
+            e.HasOne(x => x.Team).WithMany().HasForeignKey(x => x.TeamId);
+            e.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId);
         });
 
         // Fund

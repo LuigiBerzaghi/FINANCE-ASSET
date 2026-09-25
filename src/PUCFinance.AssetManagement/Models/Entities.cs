@@ -26,6 +26,14 @@ public class AppUser
     public Team? Team { get; set; }
 }
 
+public class TeamMember
+{
+    public int TeamId { get; set; }
+    public int UserId { get; set; }
+    public Team? Team { get; set; }
+    public AppUser? User { get; set; }
+}
+
 public class Fund
 {
     public int Id { get; set; }

@@ -257,7 +257,7 @@ export default function App() {
           )}
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           <div style={{ color: 'var(--text-dim)', fontSize: 11, marginLeft: 8 }}>
-            {authUser.name}{authUser.teamName ? ` | ${authUser.teamName}` : ' | Lider'}
+            {authUser.name} | {authUser.role === 'leader' ? 'Lider' : 'Gestor'}
           </div>
           <button onClick={logout}
             style={{

@@ -35,7 +35,6 @@ public class AuthController : ControllerBase
     {
         var email = request.Email.Trim().ToLowerInvariant();
         var user = await _db.Users
-            .Include(u => u.Team)
             .FirstOrDefaultAsync(u => u.Email == email && u.IsActive == 1);
 
         if (user == null || !_passwords.VerifyPassword(request.Password, user.PasswordHash))
@@ -56,7 +55,6 @@ public class AuthController : ControllerBase
             return Unauthorized();
 
         var user = await _db.Users
-            .Include(u => u.Team)
             .FirstOrDefaultAsync(u => u.Id == _currentUser.UserId.Value && u.IsActive == 1);
 
         if (user == null)
@@ -71,9 +69,7 @@ public class AuthController : ControllerBase
             Id: user.Id,
             Name: user.Name,
             Email: user.Email,
-            Role: user.Role,
-            TeamId: user.TeamId,
-            TeamName: user.Team?.Name);
+            Role: user.Role);
     }
 }
 

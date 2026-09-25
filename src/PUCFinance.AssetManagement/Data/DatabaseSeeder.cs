@@ -1,7 +1,6 @@
 using System.Data;
 using Microsoft.EntityFrameworkCore;
 using PUCFinance.AssetManagement.Models;
-using PUCFinance.AssetManagement.Services;
 
 namespace PUCFinance.AssetManagement.Data;
 
@@ -10,8 +9,9 @@ public static class DatabaseSeeder
     public static async Task SeedAsync(AppDbContext db, ILogger logger)
     {
         await EnsureAuthSchemaAsync(db);
+        await RemoveFictitiousDataAsync(db);
         await SeedFundsAsync(db);
-        await SeedTeamsAndUsersAsync(db);
+        await SeedUsersAsync(db);
         await SeedAssetsAsync(db);
 
         await db.SaveChangesAsync();
@@ -43,6 +43,14 @@ public static class DatabaseSeeder
                 )
                 """);
 
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TABLE IF NOT EXISTS team_members (
+                    team_id integer NOT NULL REFERENCES teams(id),
+                    user_id integer NOT NULL REFERENCES app_users(id),
+                    PRIMARY KEY (team_id, user_id)
+                )
+                """);
+
             if (!await ColumnExistsAsync(db, "funds", "team_id"))
                 await db.Database.ExecuteSqlRawAsync("ALTER TABLE funds ADD COLUMN team_id integer REFERENCES teams(id)");
 
@@ -67,6 +75,14 @@ public static class DatabaseSeeder
                 role text NOT NULL DEFAULT 'manager',
                 is_active integer NOT NULL DEFAULT 1,
                 created_at text NOT NULL DEFAULT (datetime('now'))
+            )
+            """);
+
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS team_members (
+                team_id integer NOT NULL REFERENCES teams(id),
+                user_id integer NOT NULL REFERENCES app_users(id),
+                PRIMARY KEY (team_id, user_id)
             )
             """);
 
@@ -112,18 +128,79 @@ public static class DatabaseSeeder
         return Convert.ToInt32(result) > 0;
     }
 
+    /// <summary>
+    /// Remove os fundos e gestores ficticios do MVP (o fundo Beta e o lider continuam).
+    /// </summary>
+    private static async Task RemoveFictitiousDataAsync(AppDbContext db)
+    {
+        var fundIds = await db.Funds
+            .Where(f => FictitiousFundNames.Contains(f.Name))
+            .Select(f => f.Id)
+            .ToListAsync();
+
+        if (fundIds.Count > 0)
+        {
+            await db.PositionHistory.Where(x => fundIds.Contains(x.FundId)).ExecuteDeleteAsync();
+            await db.RealizedPnl.Where(x => fundIds.Contains(x.FundId)).ExecuteDeleteAsync();
+            await db.Metrics.Where(x => fundIds.Contains(x.FundId)).ExecuteDeleteAsync();
+            await db.NavHistory.Where(x => fundIds.Contains(x.FundId)).ExecuteDeleteAsync();
+            await db.Positions.Where(x => fundIds.Contains(x.FundId)).ExecuteDeleteAsync();
+            await db.Trades.Where(x => fundIds.Contains(x.FundId)).ExecuteDeleteAsync();
+            await db.Cash.Where(x => fundIds.Contains(x.FundId)).ExecuteDeleteAsync();
+            await db.Funds.Where(f => fundIds.Contains(f.Id)).ExecuteDeleteAsync();
+        }
+
+        var userIds = await db.Users
+            .Where(u => FictitiousUserEmails.Contains(u.Email))
+            .Select(u => u.Id)
+            .ToListAsync();
+
+        if (userIds.Count > 0)
+        {
+            await db.TeamMembers.Where(m => userIds.Contains(m.UserId)).ExecuteDeleteAsync();
+            await db.Users.Where(u => userIds.Contains(u.Id)).ExecuteDeleteAsync();
+        }
+
+        await db.Teams
+            .Where(t => FictitiousTeamNames.Contains(t.Name))
+            .Where(t => !db.Funds.Any(f => f.TeamId == t.Id) && !db.Users.Any(u => u.TeamId == t.Id))
+            .ExecuteDeleteAsync();
+    }
+
     private static async Task SeedFundsAsync(AppDbContext db)
     {
-        if (!await db.Funds.AnyAsync())
+        var existingTeams = await db.Teams.ToDictionaryAsync(t => t.Name);
+        foreach (var seedFund in Funds)
         {
-            db.Funds.AddRange(
-                new Fund { Name = "Alpha", Strategy = "Long Only", InitialCapital = 1_000_000, TotalShares = 1_000_000 },
-                new Fund { Name = "Beta", Strategy = "Long/Short", InitialCapital = 1_000_000, TotalShares = 1_000_000 },
-                new Fund { Name = "Gamma", Strategy = "Macro", InitialCapital = 1_000_000, TotalShares = 1_000_000 }
-            );
-
-            await db.SaveChangesAsync();
+            if (!existingTeams.ContainsKey(seedFund.TeamName))
+                db.Teams.Add(new Team { Name = seedFund.TeamName });
         }
+
+        await db.SaveChangesAsync();
+
+        var teams = await db.Teams.ToDictionaryAsync(t => t.Name);
+        var existingFunds = await db.Funds.ToDictionaryAsync(f => f.Name);
+
+        foreach (var seedFund in Funds)
+        {
+            var teamId = teams[seedFund.TeamName].Id;
+            if (existingFunds.TryGetValue(seedFund.Name, out var fund))
+            {
+                fund.TeamId ??= teamId;
+                continue;
+            }
+
+            db.Funds.Add(new Fund
+            {
+                Name = seedFund.Name,
+                Strategy = seedFund.Strategy,
+                InitialCapital = 1_000_000,
+                TotalShares = 1_000_000,
+                TeamId = teamId
+            });
+        }
+
+        await db.SaveChangesAsync();
 
         var funds = await db.Funds.ToListAsync();
         var today = DateTime.Today.ToString("yyyy-MM-dd");
@@ -155,52 +232,59 @@ public static class DatabaseSeeder
         }
     }
 
-    private static async Task SeedTeamsAndUsersAsync(AppDbContext db)
+    private static async Task SeedUsersAsync(AppDbContext db)
     {
-        var teamNames = new[] { "Alpha Team", "Beta Team", "Gamma Team" };
-        var existingTeams = await db.Teams.ToDictionaryAsync(t => t.Name);
+        await MigrateLegacyLeaderAsync(db);
+        await AddUserIfMissingAsync(db, Leader.Name, Leader.Email, Leader.PasswordHash, AppRoles.Leader);
 
-        foreach (var teamName in teamNames)
-        {
-            if (!existingTeams.ContainsKey(teamName))
-                db.Teams.Add(new Team { Name = teamName });
-        }
+        foreach (var manager in Managers)
+            await AddUserIfMissingAsync(db, manager.Name, manager.Email, manager.PasswordHash, AppRoles.Manager);
 
         await db.SaveChangesAsync();
 
+        var users = await db.Users.ToDictionaryAsync(u => u.Email);
         var teams = await db.Teams.ToDictionaryAsync(t => t.Name);
-        var fundTeams = new Dictionary<string, string>
-        {
-            ["Alpha"] = "Alpha Team",
-            ["Beta"] = "Beta Team",
-            ["Gamma"] = "Gamma Team"
-        };
+        var existingMemberships = (await db.TeamMembers
+            .Select(m => new { m.TeamId, m.UserId })
+            .ToListAsync())
+            .Select(m => (m.TeamId, m.UserId))
+            .ToHashSet();
 
-        var funds = await db.Funds.ToListAsync();
-        foreach (var fund in funds)
+        foreach (var seedFund in Funds)
         {
-            if (fund.TeamId.HasValue)
-                continue;
-
-            if (fundTeams.TryGetValue(fund.Name, out var teamName) && teams.TryGetValue(teamName, out var team))
-                fund.TeamId = team.Id;
+            var teamId = teams[seedFund.TeamName].Id;
+            foreach (var email in seedFund.MemberEmails)
+            {
+                var userId = users[email].Id;
+                if (existingMemberships.Add((teamId, userId)))
+                    db.TeamMembers.Add(new TeamMember { TeamId = teamId, UserId = userId });
+            }
         }
+    }
 
-        var passwordService = new PasswordService();
-        await AddUserIfMissingAsync(db, passwordService, "Lider Geral", "lider@pucfinance.local", "Admin@123", AppRoles.Leader, null);
-        await AddUserIfMissingAsync(db, passwordService, "Gestor Alpha", "alpha@pucfinance.local", "Alpha@123", AppRoles.Manager, teams["Alpha Team"].Id);
-        await AddUserIfMissingAsync(db, passwordService, "Gestor Beta", "beta@pucfinance.local", "Beta@123", AppRoles.Manager, teams["Beta Team"].Id);
-        await AddUserIfMissingAsync(db, passwordService, "Gestor Gamma", "gamma@pucfinance.local", "Gamma@123", AppRoles.Manager, teams["Gamma Team"].Id);
+    /// <summary>
+    /// Converte o lider do MVP (lider@pucfinance.local / senha publica) no lider real,
+    /// preservando o mesmo usuario.
+    /// </summary>
+    private static async Task MigrateLegacyLeaderAsync(AppDbContext db)
+    {
+        var legacyLeader = await db.Users.FirstOrDefaultAsync(u => u.Email == LegacyLeaderEmail);
+        if (legacyLeader == null || await db.Users.AnyAsync(u => u.Email == Leader.Email))
+            return;
+
+        legacyLeader.Name = Leader.Name;
+        legacyLeader.Email = Leader.Email;
+        legacyLeader.PasswordHash = Leader.PasswordHash;
+        legacyLeader.Role = AppRoles.Leader;
+        await db.SaveChangesAsync();
     }
 
     private static async Task AddUserIfMissingAsync(
         AppDbContext db,
-        PasswordService passwordService,
         string name,
         string email,
-        string password,
-        string role,
-        int? teamId)
+        string passwordHash,
+        string role)
     {
         if (await db.Users.AnyAsync(u => u.Email == email))
             return;
@@ -209,12 +293,61 @@ public static class DatabaseSeeder
         {
             Name = name,
             Email = email,
-            PasswordHash = passwordService.HashPassword(password),
+            PasswordHash = passwordHash,
             Role = role,
-            TeamId = teamId,
             IsActive = 1
         });
     }
+
+    private static readonly string[] FictitiousFundNames = ["Alpha", "Gamma"];
+    private static readonly string[] FictitiousTeamNames = ["Alpha Team", "Gamma Team"];
+    private static readonly string[] FictitiousUserEmails =
+    [
+        "alpha@pucfinance.local",
+        "beta@pucfinance.local",
+        "gamma@pucfinance.local"
+    ];
+
+    private sealed record SeedManager(string Name, string Email, string PasswordHash);
+
+    private const string LegacyLeaderEmail = "lider@pucfinance.local";
+    private static readonly SeedManager Leader =
+        new("Gustavo", "gustavo@pucfinance", "pbkdf2$100000$9BUCxwF2kPYOHPLgEZvEVg==$m48eT9Osy90xmk9suQ8T9eHVZa9xCkkutGP8mPSWpcA=");
+
+    // Senhas iniciais entregues aos gestores fora do repositorio; aqui fica so o hash PBKDF2.
+    private static readonly SeedManager[] Managers =
+    [
+        new("Luigi", "luigi@pucfinance", "pbkdf2$100000$A5i9GC0Cxu6ZZzCNLiTLzA==$XZIHO2rLm9QbuYKOSNsFiyx2QNhzD0nlu4/aFSDjfrk="),
+        new("Braguinha", "braguinha@pucfinance", "pbkdf2$100000$p5uHbp/yeeVA7sACvC5ogw==$t9IYNrM48e9I7qz2oSC60xcA8wqC84lodrblHoeTnFk="),
+        new("Cathe", "cathe@pucfinance", "pbkdf2$100000$Ml19zdjIESJUms1Wnws4Ew==$n6LI1r8DKPI9q1vkCwl/o5UlKe9D3qiYQ659HoECNT8="),
+        new("Italo", "italo@pucfinance", "pbkdf2$100000$RS36kChXX2CiogP+OCWbPg==$1RNWInYXmInWoyhPrbbSBBuh272AobI0O9dp5SCg1+A="),
+        new("Helena", "helena@pucfinance", "pbkdf2$100000$36qO32npJ+e+niYIM9m3fw==$gX3RS4y8aXN8C9nYTkbaz+TpB4k7CSvmgK2xEKBceTg="),
+        new("Bruna", "bruna@pucfinance", "pbkdf2$100000$kv5HQTW5B/nil4vUWR/rdw==$63FGcvi2qNkJE2xtyGe8fSYVhGxqDBgzAGeBP4DM8CE="),
+        new("Thomas", "thomas@pucfinance", "pbkdf2$100000$gZSOrW2ct5GuKrJbh0+e2A==$RQFAGUF964YOU1biVmPBlNEBkpy1qbxbtSHFBGHQAws=")
+    ];
+
+    private sealed record SeedFund(string Name, string? Strategy, string TeamName, string[] MemberEmails);
+
+    private static readonly SeedFund[] Funds =
+    [
+        // Fundo de teste mantido do MVP, sem gestores (so o lider acessa)
+        new("Beta", "Long/Short", "Beta Team", []),
+
+        new("Renda Variável (Long & Short)", null, "Renda Variável (Long & Short)",
+            ["luigi@pucfinance", "braguinha@pucfinance"]),
+        new("Renda Variável (Value Investing)", null, "Renda Variável (Value Investing)",
+            ["cathe@pucfinance", "italo@pucfinance"]),
+        new("Best Ideas (Multimercado)", null, "Best Ideas (Multimercado)",
+            [
+                "luigi@pucfinance", "braguinha@pucfinance", "cathe@pucfinance",
+                "italo@pucfinance", "helena@pucfinance", "bruna@pucfinance",
+                "thomas@pucfinance"
+            ]),
+        new("Renda Fixa (On shore & Off shore)", null, "Renda Fixa (On shore & Off shore)",
+            ["braguinha@pucfinance", "helena@pucfinance"]),
+        new("Multimercado (Raiz)", null, "Multimercado (Raiz)",
+            ["bruna@pucfinance", "thomas@pucfinance"])
+    ];
 
     private static async Task SeedAssetsAsync(AppDbContext db)
     {

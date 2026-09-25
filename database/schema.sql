@@ -28,6 +28,15 @@ CREATE TABLE IF NOT EXISTS app_users (
 );
 
 -- ============================================================
+-- MEMBROS DOS TIMES (um usuario pode estar em varios times/fundos)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS team_members (
+    team_id         INTEGER NOT NULL REFERENCES teams(id),
+    user_id         INTEGER NOT NULL REFERENCES app_users(id),
+    PRIMARY KEY (team_id, user_id)
+);
+
+-- ============================================================
 -- FUNDOS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS funds (

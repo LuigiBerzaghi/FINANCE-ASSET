@@ -42,7 +42,6 @@ public class SimpleBearerAuthenticationHandler : AuthenticationHandler<Authentic
             return AuthenticateResult.Fail("Invalid or expired token.");
 
         var user = await _db.Users
-            .Include(u => u.Team)
             .FirstOrDefaultAsync(u => u.Id == validatedToken.UserId && u.IsActive == 1);
 
         if (user == null)
@@ -55,12 +54,6 @@ public class SimpleBearerAuthenticationHandler : AuthenticationHandler<Authentic
             new(ClaimTypes.Email, user.Email),
             new(ClaimTypes.Role, user.Role)
         };
-
-        if (user.TeamId.HasValue)
-            claims.Add(new Claim("team_id", user.TeamId.Value.ToString()));
-
-        if (!string.IsNullOrWhiteSpace(user.Team?.Name))
-            claims.Add(new Claim("team_name", user.Team.Name));
 
         var identity = new ClaimsIdentity(claims, Scheme.Name);
         var principal = new ClaimsPrincipal(identity);
