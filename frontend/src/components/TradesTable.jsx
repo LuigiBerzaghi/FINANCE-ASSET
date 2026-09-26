@@ -1,4 +1,4 @@
-import { fmtBRL, fmtQty } from '../lib/format';
+import { fmtBRL, fmtMoney, fmtQty } from '../lib/format';
 import { del } from '../lib/api';
 
 export default function TradesTable({ trades, onDelete }) {
@@ -79,6 +79,11 @@ export default function TradesTable({ trades, onDelete }) {
               </td>
               <td style={{ padding: '8px 10px', color: 'var(--text)', textAlign: 'right' }}>
                 {fmtBRL(t.price)}
+                {t.currency && t.currency !== 'BRL' && t.fxRate > 0 && (
+                  <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                    {fmtMoney(t.price / t.fxRate, t.currency)}
+                  </div>
+                )}
               </td>
               <td
                 style={{

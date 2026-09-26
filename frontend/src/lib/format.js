@@ -1,6 +1,9 @@
 export const fmtBRL = (v) =>
   v != null ? v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—';
 
+export const fmtMoney = (v, currency = 'BRL') =>
+  v != null ? v.toLocaleString('pt-BR', { style: 'currency', currency }) : '—';
+
 export const fmtPct = (v) =>
   v != null ? `${(v * 100).toFixed(2)}%` : '—';
 

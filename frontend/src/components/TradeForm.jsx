@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { post, get } from '../lib/api';
-import { fmtBRL } from '../lib/format';
+import { fmtBRL, fmtMoney } from '../lib/format';
 
 export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) {
   const [form, setForm] = useState({
@@ -10,6 +10,7 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [currentPrice, setCurrentPrice] = useState(null);
+  const [quote, setQuote] = useState(null);
   const [priceLoading, setPriceLoading] = useState(false);
   const isLeader = currentUser?.role === 'leader';
   const defaultFundId = activeFund || funds[0]?.id || '';
@@ -22,14 +23,17 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   const fetchPrice = async (ticker) => {
     if (!ticker || ticker.trim().length < 2) {
       setCurrentPrice(null);
+      setQuote(null);
       return;
     }
     setPriceLoading(true);
     try {
       const data = await get(`/prices/current/${ticker.trim().toUpperCase()}`);
       setCurrentPrice(data.price);
+      setQuote(data);
     } catch {
       setCurrentPrice(null);
+      setQuote(null);
     }
     setPriceLoading(false);
   };
@@ -55,6 +59,7 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
       setSuccess(`Trade executado: ${payload.side.toUpperCase()} ${payload.quantity} ${payload.ticker} @ R$${trade.price?.toFixed(2) || '?'}`);
       setForm((f) => ({ ...f, ticker: '', quantity: '', thesis: '' }));
       setCurrentPrice(null);
+      setQuote(null);
       onSubmit?.();
       setTimeout(() => onSubmit?.(), 5000);
     } catch (e) {
@@ -109,6 +114,11 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
         {currentPrice && !priceLoading && (
           <div style={{ fontSize: 12, color: 'var(--green)', marginTop: 4, fontWeight: 600 }}>
             Preco atual: {fmtBRL(currentPrice)}
+          </div>
+        )}
+        {quote && quote.currency !== 'BRL' && !priceLoading && (
+          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+            {fmtMoney(quote.nativePrice, quote.currency)} × {quote.fxRate?.toFixed(4)} {quote.currency}/BRL = {fmtBRL(quote.price)}
           </div>
         )}
       </div>

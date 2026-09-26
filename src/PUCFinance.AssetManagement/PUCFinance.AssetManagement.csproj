@@ -16,9 +16,6 @@
     <!-- Swagger -->
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
     
-    <!-- Yahoo Finance -->
-    <PackageReference Include="OoplesFinance.YahooFinanceAPI" Version="1.7.1" />
-    
     <!-- Excel export -->
     <PackageReference Include="ClosedXML" Version="0.104.2" />
     

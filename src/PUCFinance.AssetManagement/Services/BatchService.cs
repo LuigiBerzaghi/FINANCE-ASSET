@@ -4,6 +4,9 @@ namespace PUCFinance.AssetManagement.Services;
 
 public class BatchService
 {
+    /// <summary>Um batch por vez (cron, pos-trade e pos-migracao podem disparar juntos).</summary>
+    private static readonly SemaphoreSlim BatchGate = new(1, 1);
+
     private readonly PricingService _pricing;
     private readonly NavCalculator _nav;
     private readonly MetricsCalculator _metrics;
@@ -26,6 +29,19 @@ public class BatchService
 
     public async Task<BatchResultResponse> RunDailyUpdateAsync()
     {
+        await BatchGate.WaitAsync();
+        try
+        {
+            return await RunDailyUpdateLockedAsync();
+        }
+        finally
+        {
+            BatchGate.Release();
+        }
+    }
+
+    private async Task<BatchResultResponse> RunDailyUpdateLockedAsync()
+    {
         _logger.LogInformation("=== Batch diario iniciado ===");
 
         try
@@ -38,13 +54,22 @@ public class BatchService
             _logger.LogInformation("Etapa 2/4: Atualizando CDI...");
             await _cdi.FetchAndStoreCdiAsync();
 
-            // 3. NAV
-            _logger.LogInformation("Etapa 3/4: Recalculando NAV...");
-            await _nav.CalculateAllAsync();
+            // NAV e metricas leem/gravam posicoes: sem trades ou reconstrucoes no meio
+            await TradeService.PortfolioLock.WaitAsync();
+            try
+            {
+                // 3. NAV
+                _logger.LogInformation("Etapa 3/4: Recalculando NAV...");
+                await _nav.CalculateAllAsync();
 
-            // 4. Metricas
-            _logger.LogInformation("Etapa 4/4: Calculando metricas...");
-            await _metrics.CalculateAllAsync();
+                // 4. Metricas
+                _logger.LogInformation("Etapa 4/4: Calculando metricas...");
+                await _metrics.CalculateAllAsync();
+            }
+            finally
+            {
+                TradeService.PortfolioLock.Release();
+            }
 
             _logger.LogInformation("=== Batch diario concluido com sucesso ===");
 

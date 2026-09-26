@@ -80,7 +80,7 @@ public class ExportService
 
         // ── Trades ──────────────────────────
         var wsTrades = wb.AddWorksheet("Trades");
-        var tradeHeaders = new[] { "Data", "Ticker", "Side", "Quantidade", "Preco", "Tese", "Gestor" };
+        var tradeHeaders = new[] { "Data", "Ticker", "Side", "Quantidade", "Preco (BRL)", "Tese", "Gestor", "Moeda", "Cambio", "Preco Original" };
         for (int i = 0; i < tradeHeaders.Length; i++)
         {
             wsTrades.Cell(1, i + 1).Value = tradeHeaders[i];
@@ -96,6 +96,12 @@ public class ExportService
             wsTrades.Cell(i + 2, 5).Value = t.Price;
             wsTrades.Cell(i + 2, 6).Value = t.Thesis ?? "";
             wsTrades.Cell(i + 2, 7).Value = t.ExecutedBy ?? "";
+            wsTrades.Cell(i + 2, 8).Value = t.Currency;
+            if (t.FxRate is > 0)
+            {
+                wsTrades.Cell(i + 2, 9).Value = t.FxRate.Value;
+                wsTrades.Cell(i + 2, 10).Value = t.Price / t.FxRate.Value;
+            }
         }
         wsTrades.Columns().AdjustToContents();
 

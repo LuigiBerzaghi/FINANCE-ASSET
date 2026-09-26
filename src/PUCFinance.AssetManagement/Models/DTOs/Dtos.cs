@@ -95,10 +95,12 @@ public record TradeResponse(
     string Ticker,
     string Side,
     double Quantity,
-    double Price,
+    double Price,           // BRL
     string? Thesis,
     string ExecutedAt,
-    string? ExecutedBy
+    string? ExecutedBy,
+    string Currency,        // moeda de cotacao do ativo
+    double? FxRate          // BRL por unidade da moeda
 );
 
 public record MetricsResponse(

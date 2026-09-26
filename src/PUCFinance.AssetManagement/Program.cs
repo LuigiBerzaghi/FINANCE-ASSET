@@ -26,6 +26,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 });
 
 // Services
+builder.Services.AddScoped<YahooChartClient>();
 builder.Services.AddScoped<PricingService>();
 builder.Services.AddScoped<TradeService>();
 builder.Services.AddScoped<NavCalculator>();
@@ -33,12 +34,15 @@ builder.Services.AddScoped<MetricsCalculator>();
 builder.Services.AddScoped<BatchService>();
 builder.Services.AddScoped<ExportService>();
 builder.Services.AddScoped<CdiService>();
+builder.Services.AddScoped<NavHistoryRebuilder>();
+builder.Services.AddScoped<CurrencyMigrationService>();
 builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddSingleton<AuthTokenService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<CurrentUserService>();
 builder.Services.AddScoped<FundAccessService>();
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient(YahooChartClient.HttpClientName, YahooChartClient.Configure);
 
 // API
 builder.Services.AddAuthentication(SimpleBearerAuthenticationHandler.SchemeName)
@@ -73,6 +77,9 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await InitializeDatabaseAsync(db, app.Logger);
 }
+
+// Roda em background para nao atrasar a subida (o Heroku exige a porta aberta em ate 60s)
+_ = Task.Run(() => ConvertLegacyForeignTradesAsync(app.Services, app.Logger));
 
 app.UseSwagger();
 app.UseSwaggerUI();
@@ -117,6 +124,32 @@ async Task InitializeDatabaseAsync(AppDbContext db, ILogger logger)
 {
     await db.Database.EnsureCreatedAsync();
     await DatabaseSeeder.SeedAsync(db, logger);
+}
+
+// Trades antigos de ativos estrangeiros foram gravados na moeda original como se fosse BRL
+async Task ConvertLegacyForeignTradesAsync(IServiceProvider rootServices, ILogger logger)
+{
+    try
+    {
+        bool changed;
+        using (var scope = rootServices.CreateScope())
+        {
+            var migration = scope.ServiceProvider.GetRequiredService<CurrencyMigrationService>();
+            changed = await migration.RunAsync();
+        }
+
+        if (!changed)
+            return;
+
+        // Recalcula precos, posicoes e NAV de hoje em BRL
+        using var batchScope = rootServices.CreateScope();
+        var batch = batchScope.ServiceProvider.GetRequiredService<BatchService>();
+        await batch.RunDailyUpdateAsync();
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Conversao de trades em moeda estrangeira falhou; sera tentada no proximo boot");
+    }
 }
 
 string GetSqlitePath()
