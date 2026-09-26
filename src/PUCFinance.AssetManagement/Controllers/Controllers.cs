@@ -935,7 +935,7 @@ public class TradesController : ControllerBase
             .OrderByDescending(t => t.ExecutedAt)
             .Select(t => new TradeResponse(
                 t.Id, t.Ticker, t.Side, t.Quantity, t.Price,
-                t.Thesis, t.ExecutedAt, t.ExecutedBy))
+                t.Thesis, t.ExecutedAt, t.ExecutedBy, t.Currency, t.FxRate))
             .ToListAsync();
 
         return Ok(trades);
@@ -997,15 +997,22 @@ public class PricesController : ControllerBase
 
     public PricesController(PricingService pricing) => _pricing = pricing;
 
-    /// <summary>GET /api/prices/current/{ticker} — Preco atual de um ticker</summary>
+    /// <summary>GET /api/prices/current/{ticker} — Preco atual em BRL e na moeda original</summary>
     [HttpGet("current/{ticker}")]
     public async Task<ActionResult> GetCurrentPrice(string ticker)
     {
-        var price = await _pricing.GetLatestPriceAsync(ticker.Trim().ToUpper());
-        if (price == null)
+        var quote = await _pricing.GetQuoteAsync(ticker.Trim().ToUpper());
+        if (quote == null)
             return NotFound(new { error = $"Preco nao encontrado para {ticker}" });
 
-        return Ok(new { ticker = ticker.Trim().ToUpper(), price = price.Value });
+        return Ok(new
+        {
+            ticker = ticker.Trim().ToUpper(),
+            price = quote.PriceBrl,
+            nativePrice = quote.NativePrice,
+            currency = quote.Currency,
+            fxRate = quote.FxRate
+        });
     }
 }
 

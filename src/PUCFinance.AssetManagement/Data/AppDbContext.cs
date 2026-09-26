@@ -110,6 +110,8 @@ public class AppDbContext : DbContext
             e.Property(x => x.Side).HasColumnName("side");
             e.Property(x => x.Quantity).HasColumnName("quantity");
             e.Property(x => x.Price).HasColumnName("price");
+            e.Property(x => x.Currency).HasColumnName("currency").IsRequired();
+            e.Property(x => x.FxRate).HasColumnName("fx_rate");
             e.Property(x => x.Thesis).HasColumnName("thesis");
             e.Property(x => x.ExecutedAt).HasColumnName("executed_at");
             e.Property(x => x.ExecutedBy).HasColumnName("executed_by");

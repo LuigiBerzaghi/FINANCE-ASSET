@@ -55,6 +55,7 @@ public static class DatabaseSeeder
             if (!await ColumnExistsAsync(db, "funds", "team_id"))
                 await db.Database.ExecuteSqlRawAsync("ALTER TABLE funds ADD COLUMN team_id integer REFERENCES teams(id)");
 
+            await EnsureTradeCurrencyColumnsAsync(db);
             return;
         }
 
@@ -89,6 +90,25 @@ public static class DatabaseSeeder
 
         if (!await ColumnExistsAsync(db, "funds", "team_id"))
             await db.Database.ExecuteSqlRawAsync("ALTER TABLE funds ADD COLUMN team_id integer REFERENCES teams(id)");
+
+        await EnsureTradeCurrencyColumnsAsync(db);
+    }
+
+    /// <summary>
+    /// Colunas de moeda/cambio dos trades. fx_rate fica null nos trades antigos,
+    /// que sao convertidos para BRL por TradeService.ConvertLegacyForeignTradesAsync.
+    /// </summary>
+    private static async Task EnsureTradeCurrencyColumnsAsync(AppDbContext db)
+    {
+        if (!await ColumnExistsAsync(db, "trades", "currency"))
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE trades ADD COLUMN currency text NOT NULL DEFAULT 'BRL'");
+
+        if (!await ColumnExistsAsync(db, "trades", "fx_rate"))
+        {
+            await db.Database.ExecuteSqlRawAsync(db.Database.IsNpgsql()
+                ? "ALTER TABLE trades ADD COLUMN fx_rate double precision"
+                : "ALTER TABLE trades ADD COLUMN fx_rate real");
+        }
     }
 
     private static async Task<bool> ColumnExistsAsync(AppDbContext db, string tableName, string columnName)

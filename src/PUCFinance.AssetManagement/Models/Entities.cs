@@ -68,7 +68,9 @@ public class Trade
     public string Ticker { get; set; } = string.Empty;
     public string Side { get; set; } = "long";
     public double Quantity { get; set; }
-    public double Price { get; set; }
+    public double Price { get; set; }              // sempre em BRL
+    public string Currency { get; set; } = "BRL";  // moeda de cotacao do ativo
+    public double? FxRate { get; set; }            // BRL por unidade da moeda; null = trade legado nao convertido
     public string? Thesis { get; set; }
     public string ExecutedAt { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
     public string? ExecutedBy { get; set; }
