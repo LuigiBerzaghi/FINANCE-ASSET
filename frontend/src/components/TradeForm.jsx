@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { post, get } from '../lib/api';
-import { fmtBRL, fmtMoney } from '../lib/format';
+import { fmtBRL, fmtMoney, fmtQty } from '../lib/format';
 
 export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) {
   const [form, setForm] = useState({
@@ -56,7 +56,14 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
         throw new Error(isLeader ? 'Preencha fundo, ticker e quantidade' : 'Preencha ticker e quantidade');
       }
       const trade = await post('/trades', payload);
-      setSuccess(`Trade executado: ${payload.side.toUpperCase()} ${payload.quantity} ${payload.ticker} @ R$${trade.price?.toFixed(2) || '?'}`);
+      const nativeUnit = trade.currency && trade.currency !== 'BRL' && trade.fxRate > 0
+        ? ` (${fmtMoney(trade.price / trade.fxRate, trade.currency)} cada)`
+        : '';
+      setSuccess(
+        `Trade executado: ${payload.side.toUpperCase()} ${fmtQty(trade.quantity)} ${trade.ticker}`
+        + ` a ${fmtBRL(trade.price)} cada${nativeUnit}`
+        + ` = ${fmtBRL(trade.price * trade.quantity)} no total`,
+      );
       setForm((f) => ({ ...f, ticker: '', quantity: '', thesis: '' }));
       setCurrentPrice(null);
       setQuote(null);
