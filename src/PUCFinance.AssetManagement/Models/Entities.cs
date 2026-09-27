@@ -180,3 +180,26 @@ public class Asset
     public string? YahooTicker { get; set; }
     public int IsActive { get; set; } = 1;
 }
+
+/// <summary>
+/// Cupom ou resgate de titulo publico creditado no caixa do fundo. AmountPerUnit e o valor por titulo;
+/// Quantity e Total sao recalculados pela reconstrucao do fundo (quantidade em carteira na vespera).
+/// </summary>
+public class TreasuryEvent
+{
+    public int Id { get; set; }
+    public int FundId { get; set; }
+    public string Ticker { get; set; } = string.Empty;
+    public string EventDate { get; set; } = string.Empty;
+    public string Kind { get; set; } = TreasuryEventKinds.Coupon;
+    public double AmountPerUnit { get; set; }
+    public double Quantity { get; set; }
+    public double Total { get; set; }
+    public string CreatedAt { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+}
+
+public static class TreasuryEventKinds
+{
+    public const string Coupon = "coupon";
+    public const string Maturity = "maturity";
+}

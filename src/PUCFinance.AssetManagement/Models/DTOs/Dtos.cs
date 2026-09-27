@@ -211,3 +211,18 @@ public record AssetResponse(
     string? Exchange,
     string Currency
 );
+
+/// <summary>Titulo publico ofertado no Tesouro Direto (taxas em % a.a., precos por titulo).</summary>
+public record TreasuryBondResponse(
+    string Ticker,
+    string Name,
+    string Type,
+    string Code,
+    string Maturity,
+    string BaseDate,
+    double BuyRate,
+    double SellRate,
+    double BuyPrice,
+    double SellPrice,
+    bool CanBuy
+);

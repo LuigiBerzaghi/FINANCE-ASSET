@@ -35,6 +35,9 @@ builder.Services.AddScoped<BatchService>();
 builder.Services.AddScoped<ExportService>();
 builder.Services.AddScoped<CdiService>();
 builder.Services.AddScoped<NavHistoryRebuilder>();
+builder.Services.AddSingleton<TesouroDiretoClient>();
+builder.Services.AddScoped<TreasuryIndexService>();
+builder.Services.AddScoped<TreasuryService>();
 builder.Services.AddScoped<CurrencyMigrationService>();
 builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddSingleton<AuthTokenService>();
@@ -43,6 +46,7 @@ builder.Services.AddScoped<CurrentUserService>();
 builder.Services.AddScoped<FundAccessService>();
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient(YahooChartClient.HttpClientName, YahooChartClient.Configure);
+builder.Services.AddHttpClient(TesouroDiretoClient.HttpClientName, TesouroDiretoClient.Configure);
 
 // API
 builder.Services.AddAuthentication(SimpleBearerAuthenticationHandler.SchemeName)
@@ -80,6 +84,20 @@ using (var scope = app.Services.CreateScope())
 
 // Roda em background para nao atrasar a subida (o Heroku exige a porta aberta em ate 60s)
 _ = Task.Run(() => ConvertLegacyForeignTradesAsync(app.Services, app.Logger));
+
+// Baixa os precos do Tesouro Direto (~15 MB) e atualiza o catalogo de titulos sem atrasar a subida
+_ = Task.Run(async () =>
+{
+    try
+    {
+        using var scope = app.Services.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<TreasuryService>().SyncCatalogAsync();
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "Carga inicial do Tesouro Direto falhou");
+    }
+});
 
 app.UseSwagger();
 app.UseSwaggerUI();
