@@ -311,6 +311,11 @@ public class FundsController : ControllerBase
                 .Where(r => r.FundId == id && r.Ticker == pos.Ticker)
                 .SumAsync(r => (double?)r.Pnl) ?? 0;
 
+            // Cupons recebidos de titulos publicos sao resultado realizado do ativo
+            realizedTotal += await _db.TreasuryEvents
+                .Where(e => e.FundId == id && e.Ticker == pos.Ticker && e.Kind == TreasuryEventKinds.Coupon)
+                .SumAsync(e => (double?)e.Total) ?? 0;
+
             var marketValue = CurrentMarketValue(pos);
             var unrealizedPnl = CurrentUnrealizedPnl(pos);
             var totalPnl = unrealizedPnl + realizedTotal;
@@ -740,6 +745,15 @@ public class FundsController : ControllerBase
             .Select(g => new { Ticker = g.Key, Pnl = g.Sum(r => r.Pnl) })
             .ToDictionaryAsync(x => x.Ticker, x => x.Pnl);
 
+        // Cupons de titulos publicos pagos hoje entram como resultado do dia do titulo
+        var couponsToday = await _db.TreasuryEvents
+            .Where(e => e.FundId == snapshot.Fund.Id && e.EventDate == snapshot.Date && e.Kind == TreasuryEventKinds.Coupon)
+            .GroupBy(e => e.Ticker)
+            .Select(g => new { Ticker = g.Key, Total = g.Sum(e => e.Total) })
+            .ToListAsync();
+        foreach (var coupon in couponsToday)
+            realizedToday[coupon.Ticker] = realizedToday.GetValueOrDefault(coupon.Ticker) + coupon.Total;
+
         var tickers = snapshot.Positions
             .Select(p => p.Ticker)
             .Concat(realizedToday.Keys)
@@ -994,13 +1008,42 @@ public class BatchController : ControllerBase
 public class PricesController : ControllerBase
 {
     private readonly PricingService _pricing;
+    private readonly TesouroDiretoClient _tesouro;
 
-    public PricesController(PricingService pricing) => _pricing = pricing;
+    public PricesController(PricingService pricing, TesouroDiretoClient tesouro)
+    {
+        _pricing = pricing;
+        _tesouro = tesouro;
+    }
 
     /// <summary>GET /api/prices/current/{ticker} — Preco atual em BRL e na moeda original</summary>
     [HttpGet("current/{ticker}")]
     public async Task<ActionResult> GetCurrentPrice(string ticker)
     {
+        // Titulo publico: PU de compra (preco do trade de compra) e PU de venda
+        if (TesouroDireto.IsTreasuryTicker(ticker))
+        {
+            var bond = await _tesouro.GetLatestQuoteAsync(ticker);
+            if (bond == null)
+                return NotFound(new { error = $"{ticker.Trim().ToUpper()} nao esta sendo negociado no Tesouro Direto" });
+
+            var price = bond.CanBuy ? bond.BuyPrice : bond.SellPrice;
+            return Ok(new
+            {
+                ticker = bond.Bond.Ticker,
+                price,
+                nativePrice = price,
+                currency = PricingService.BaseCurrency,
+                fxRate = 1.0,
+                name = bond.Bond.DisplayName,
+                buyPrice = bond.BuyPrice,
+                sellPrice = bond.SellPrice,
+                buyRate = bond.BuyRate,
+                sellRate = bond.SellRate,
+                baseDate = bond.BaseDate
+            });
+        }
+
         var quote = await _pricing.GetQuoteAsync(ticker.Trim().ToUpper());
         if (quote == null)
             return NotFound(new { error = $"Preco nao encontrado para {ticker}" });
@@ -1016,3 +1059,39 @@ public class PricesController : ControllerBase
     }
 }
 
+// ════════════════════════════════════════════════════════
+// TESOURO DIRETO (titulos publicos)
+// ════════════════════════════════════════════════════════
+
+[ApiController]
+[Authorize]
+[Route("api/treasury")]
+public class TreasuryController : ControllerBase
+{
+    private readonly TesouroDiretoClient _tesouro;
+
+    public TreasuryController(TesouroDiretoClient tesouro) => _tesouro = tesouro;
+
+    /// <summary>GET /api/treasury/bonds — Titulos ofertados hoje, com taxas e precos (PU)</summary>
+    [HttpGet("bonds")]
+    public async Task<ActionResult<List<TreasuryBondResponse>>> GetBonds()
+    {
+        var latest = await _tesouro.GetLatestAsync();
+        if (latest.Count == 0)
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { error = "Precos do Tesouro Direto indisponiveis no momento" });
+
+        return Ok(latest.Select(q => new TreasuryBondResponse(
+            Ticker: q.Bond.Ticker,
+            Name: q.Bond.DisplayName,
+            Type: q.Bond.Type.Name,
+            Code: q.Bond.Type.Code,
+            Maturity: TesouroDireto.ToIsoDate(q.Bond.Maturity),
+            BaseDate: q.BaseDate,
+            BuyRate: q.BuyRate,
+            SellRate: q.SellRate,
+            BuyPrice: q.BuyPrice,
+            SellPrice: q.SellPrice,
+            CanBuy: q.CanBuy)).ToList());
+    }
+}

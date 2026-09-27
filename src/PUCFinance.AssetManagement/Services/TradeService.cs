@@ -15,12 +15,14 @@ public class TradeService
 
     private readonly AppDbContext _db;
     private readonly PricingService _pricing;
+    private readonly TesouroDiretoClient _tesouro;
     private readonly ILogger<TradeService> _logger;
 
-    public TradeService(AppDbContext db, PricingService pricing, ILogger<TradeService> logger)
+    public TradeService(AppDbContext db, PricingService pricing, TesouroDiretoClient tesouro, ILogger<TradeService> logger)
     {
         _db = db;
         _pricing = pricing;
+        _tesouro = tesouro;
         _logger = logger;
     }
 
@@ -38,8 +40,13 @@ public class TradeService
         if (request.Side is not ("long" or "short"))
             throw new ArgumentException("Side deve ser 'long' ou 'short'");
 
-        // Busca preco atual do Yahoo Finance, ja convertido para BRL
-        var quote = await _pricing.GetQuoteAsync(request.Ticker.Trim().ToUpper());
+        var ticker = request.Ticker.Trim().ToUpper();
+        var isTreasury = TesouroDireto.IsTreasuryTicker(ticker);
+        if (isTreasury)
+            await ValidateTreasuryTradeAsync(ticker, request);
+
+        // Preco atual ja em BRL (acoes: Yahoo; titulos publicos: PU de compra ou de venda do Tesouro)
+        var quote = await _pricing.GetTradeQuoteAsync(ticker, request.Side);
         if (quote == null || quote.PriceBrl <= 0)
             throw new InvalidOperationException($"Nao foi possivel obter preco para {request.Ticker}. Verifique se o ticker esta correto.");
         var price = quote.PriceBrl;
@@ -53,6 +60,18 @@ public class TradeService
             // Recarrega o saldo: outra operacao pode ter alterado o caixa enquanto o preco era buscado
             await _db.Entry(cash).ReloadAsync();
 
+            // Titulo publico nao pode ser vendido a descoberto: so vende o que o fundo tem
+            if (isTreasury && request.Side == "short")
+            {
+                var held = await _db.Positions
+                    .Where(p => p.FundId == request.FundId && p.Ticker == ticker)
+                    .Select(p => (double?)p.Quantity)
+                    .FirstOrDefaultAsync() ?? 0;
+                if (request.Quantity > held + 1e-9)
+                    throw new InvalidOperationException(
+                        $"Venda maior que a posicao em {ticker}: o fundo tem {held:N2} titulo(s). Titulos publicos nao podem ser vendidos a descoberto.");
+            }
+
             var signedQuantity = request.Side == "long" ? request.Quantity : -request.Quantity;
             var cashImpact = -(signedQuantity * price);
 
@@ -64,7 +83,7 @@ public class TradeService
             var trade = new Trade
             {
                 FundId = request.FundId,
-                Ticker = request.Ticker.Trim().ToUpper(),
+                Ticker = ticker,
                 Side = request.Side,
                 Quantity = request.Quantity,
                 Price = price,
@@ -94,6 +113,47 @@ public class TradeService
         finally
         {
             PortfolioLock.Release();
+        }
+    }
+
+    private async Task ValidateTreasuryTradeAsync(string ticker, ExecuteTradeRequest request)
+    {
+        var cents = request.Quantity / TesouroDireto.QuantityStep;
+        if (Math.Abs(cents - Math.Round(cents)) > 1e-6)
+            throw new ArgumentException("Titulos publicos sao negociados em multiplos de 0,01");
+
+        var quote = await _tesouro.GetLatestQuoteAsync(ticker);
+        if (quote == null)
+            throw new InvalidOperationException(
+                $"{ticker} nao esta sendo negociado no Tesouro Direto (vencido ou fora de oferta)");
+
+        if (request.Side == "long" && !quote.CanBuy)
+            throw new InvalidOperationException(
+                $"{quote.Bond.DisplayName} esta disponivel apenas para venda no Tesouro Direto");
+
+        // Classifica o titulo como Renda Fixa na exposicao, mesmo antes do batch sincronizar o catalogo
+        if (!await _db.Assets.AnyAsync(a => a.Ticker == ticker))
+        {
+            var asset = new Asset
+            {
+                Ticker = ticker,
+                Name = quote.Bond.DisplayName,
+                AssetClass = TesouroDireto.AssetClass,
+                Sector = quote.Bond.Type.Name,
+                Exchange = TesouroDireto.Exchange,
+                Currency = PricingService.BaseCurrency,
+                IsActive = 1
+            };
+            _db.Assets.Add(asset);
+            try
+            {
+                await _db.SaveChangesAsync();
+            }
+            catch (DbUpdateException)
+            {
+                // A sincronizacao do catalogo cadastrou o titulo ao mesmo tempo: segue com o cadastro dela
+                _db.Entry(asset).State = EntityState.Detached;
+            }
         }
     }
 
@@ -127,8 +187,10 @@ public class TradeService
     }
 
     /// <summary>
-    /// Reconstroi posicoes, P&L realizado e caixa de um fundo reaplicando todos os seus trades
-    /// em ordem cronologica. Nao abre transacao nem pega a trava; o chamador decide.
+    /// Reconstroi posicoes, P&L realizado e caixa de um fundo reaplicando todos os seus trades e
+    /// eventos de titulos publicos (cupons e resgates) em ordem cronologica. Tambem atualiza a
+    /// quantidade/valor de cada evento e remove eventos de titulos que o fundo nao tinha na data.
+    /// Nao abre transacao nem pega a trava; o chamador decide.
     /// </summary>
     public async Task RebuildFundAsync(int fundId)
     {
@@ -138,44 +200,58 @@ public class TradeService
         var fund = await _db.Funds.FindAsync(fundId)
             ?? throw new InvalidOperationException($"Fundo {fundId} nao encontrado");
 
-        var trades = await _db.Trades
-            .Where(t => t.FundId == fundId)
-            .OrderBy(t => t.ExecutedAt)
-            .ThenBy(t => t.Id)
-            .ToListAsync();
+        var trades = await _db.Trades.Where(t => t.FundId == fundId).ToListAsync();
+        var events = await _db.TreasuryEvents.Where(e => e.FundId == fundId).ToListAsync();
+        var state = FundLedger.Replay(fund.InitialCapital, trades, events);
 
-        var fundPositions = await _db.Positions
-            .Where(p => p.FundId == fundId)
-            .ToListAsync();
-        _db.Positions.RemoveRange(fundPositions);
-
-        var fundRealizedPnl = await _db.RealizedPnl
-            .Where(r => r.FundId == fundId)
-            .ToListAsync();
-        _db.RealizedPnl.RemoveRange(fundRealizedPnl);
-
-        cash.Balance = fund.InitialCapital;
+        _db.Positions.RemoveRange(await _db.Positions.Where(p => p.FundId == fundId).ToListAsync());
+        _db.RealizedPnl.RemoveRange(await _db.RealizedPnl.Where(r => r.FundId == fundId).ToListAsync());
         await _db.SaveChangesAsync();
 
-        foreach (var trade in trades)
+        var now = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+        foreach (var (ticker, position) in state.Positions)
         {
-            var signedQuantity = trade.Side == "long" ? trade.Quantity : -trade.Quantity;
-
-            await UpdatePositionAsync(
-                trade.FundId,
-                trade.Ticker,
-                signedQuantity,
-                trade.Price,
-                trade.Side,
-                trade.ExecutedAt);
-
-            cash.Balance += -(signedQuantity * trade.Price);
-
-            // Salva a cada trade: UpdatePositionAsync consulta o banco e nao enxerga posicoes so adicionadas
-            await _db.SaveChangesAsync();
+            _db.Positions.Add(new Position
+            {
+                FundId = fundId,
+                Ticker = ticker,
+                Quantity = position.Quantity,
+                AvgPrice = position.AvgPrice,
+                Side = position.Side,
+                UpdatedAt = now
+            });
         }
 
-        cash.UpdatedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+        foreach (var realized in state.Realized)
+        {
+            _db.RealizedPnl.Add(new RealizedPnl
+            {
+                FundId = fundId,
+                Ticker = realized.Ticker,
+                Quantity = realized.Fill.Quantity,
+                EntryPrice = realized.Fill.EntryPrice,
+                ExitPrice = realized.Fill.ExitPrice,
+                Pnl = realized.Fill.Pnl,
+                Side = realized.Fill.Side,
+                ClosedAt = realized.ClosedAt
+            });
+        }
+
+        foreach (var ev in events)
+        {
+            var quantity = state.EventQuantities.GetValueOrDefault(ev.Id);
+            if (quantity <= 0)
+            {
+                _db.TreasuryEvents.Remove(ev);
+                continue;
+            }
+
+            ev.Quantity = quantity;
+            ev.Total = quantity * ev.AmountPerUnit;
+        }
+
+        cash.Balance = state.Cash;
+        cash.UpdatedAt = now;
         await _db.SaveChangesAsync();
     }
 

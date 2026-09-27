@@ -10,5 +10,13 @@ export const fmtPct = (v) =>
 export const fmtNum = (v, d = 4) =>
   v != null ? v.toFixed(d) : '—';
 
+// Taxa de titulo publico no formato do Tesouro Direto (ex.: IPCA + 7,56%, 13,55% a.a.)
+const RATE_INDEX = { NTNB: 'IPCA', NTNBP: 'IPCA', EDUCA: 'IPCA', RENDA: 'IPCA', NTNC: 'IGP-M', LFT: 'Selic' };
+export const fmtRate = (code, rate) => {
+  if (rate == null) return '—';
+  const pct = `${rate.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+  return RATE_INDEX[code] ? `${RATE_INDEX[code]} + ${pct}` : `${pct} a.a.`;
+};
+
 export const fmtQty = (v) =>
   v != null ? v.toLocaleString('pt-BR') : '—';

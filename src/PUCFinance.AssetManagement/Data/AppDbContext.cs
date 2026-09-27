@@ -21,6 +21,7 @@ public class AppDbContext : DbContext
     public DbSet<RealizedPnl> RealizedPnl => Set<RealizedPnl>();
     public DbSet<PositionHistory> PositionHistory => Set<PositionHistory>();
     public DbSet<Asset> Assets => Set<Asset>();
+    public DbSet<TreasuryEvent> TreasuryEvents => Set<TreasuryEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -239,6 +240,24 @@ public class AppDbContext : DbContext
             e.Property(x => x.Contribution).HasColumnName("contribution");
             e.Property(x => x.Weight).HasColumnName("weight");
             e.HasIndex(x => new { x.FundId, x.Ticker, x.Date }).IsUnique();
+            e.HasOne<Fund>().WithMany().HasForeignKey(x => x.FundId);
+        });
+
+        // TreasuryEvent (cupons e resgates de titulos publicos)
+        modelBuilder.Entity<TreasuryEvent>(e =>
+        {
+            e.ToTable("treasury_events");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.FundId).HasColumnName("fund_id");
+            e.Property(x => x.Ticker).HasColumnName("ticker").IsRequired();
+            e.Property(x => x.EventDate).HasColumnName("event_date").IsRequired();
+            e.Property(x => x.Kind).HasColumnName("kind").IsRequired();
+            e.Property(x => x.AmountPerUnit).HasColumnName("amount_per_unit");
+            e.Property(x => x.Quantity).HasColumnName("quantity");
+            e.Property(x => x.Total).HasColumnName("total");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at");
+            e.HasIndex(x => new { x.FundId, x.Ticker, x.EventDate, x.Kind }).IsUnique();
             e.HasOne<Fund>().WithMany().HasForeignKey(x => x.FundId);
         });
 

@@ -1,6 +1,7 @@
 using ClosedXML.Excel;
 using Microsoft.EntityFrameworkCore;
 using PUCFinance.AssetManagement.Data;
+using PUCFinance.AssetManagement.Models;
 
 namespace PUCFinance.AssetManagement.Services;
 
@@ -24,6 +25,7 @@ public class ExportService
         var metrics = await _db.Metrics.Where(m => m.FundId == fundId).OrderByDescending(m => m.Date).ToListAsync();
         var posHistory = await _db.PositionHistory.Where(h => h.FundId == fundId).OrderBy(h => h.Date).ThenBy(h => h.Ticker).ToListAsync();
         var realized = await _db.RealizedPnl.Where(r => r.FundId == fundId).ToListAsync();
+        var treasuryEvents = await _db.TreasuryEvents.Where(e => e.FundId == fundId).OrderBy(e => e.EventDate).ThenBy(e => e.Ticker).ToListAsync();
         var cash = await _db.Cash.FindAsync(fundId);
         var latestNav = navHistory.LastOrDefault();
 
@@ -195,6 +197,29 @@ public class ExportService
                 wsReal.Cell(i + 2, 7).Value = r.Pnl;
             }
             wsReal.Columns().AdjustToContents();
+        }
+
+        // ── Cupons e resgates de titulos publicos ──
+        if (treasuryEvents.Count > 0)
+        {
+            var wsEvents = wb.AddWorksheet("Cupons e Resgates");
+            var eventHeaders = new[] { "Data", "Titulo", "Evento", "Valor por Titulo", "Quantidade", "Total" };
+            for (int i = 0; i < eventHeaders.Length; i++)
+            {
+                wsEvents.Cell(1, i + 1).Value = eventHeaders[i];
+                wsEvents.Cell(1, i + 1).Style.Font.Bold = true;
+            }
+            for (int i = 0; i < treasuryEvents.Count; i++)
+            {
+                var e = treasuryEvents[i];
+                wsEvents.Cell(i + 2, 1).Value = e.EventDate;
+                wsEvents.Cell(i + 2, 2).Value = e.Ticker;
+                wsEvents.Cell(i + 2, 3).Value = e.Kind == TreasuryEventKinds.Coupon ? "Cupom" : "Resgate (vencimento)";
+                wsEvents.Cell(i + 2, 4).Value = e.AmountPerUnit;
+                wsEvents.Cell(i + 2, 5).Value = e.Quantity;
+                wsEvents.Cell(i + 2, 6).Value = e.Total;
+            }
+            wsEvents.Columns().AdjustToContents();
         }
 
         using var ms = new MemoryStream();

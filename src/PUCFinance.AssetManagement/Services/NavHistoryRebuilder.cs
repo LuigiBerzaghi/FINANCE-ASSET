@@ -84,48 +84,40 @@ public class NavHistoryRebuilder
         if (navs.Count == 0)
             return;
 
-        var trades = await _db.Trades
-            .Where(t => t.FundId == fundId)
-            .OrderBy(t => t.ExecutedAt)
-            .ThenBy(t => t.Id)
-            .ToListAsync();
+        var trades = await _db.Trades.Where(t => t.FundId == fundId).ToListAsync();
+        var events = await _db.TreasuryEvents.Where(e => e.FundId == fundId).ToListAsync();
 
         await _db.PositionHistory
             .Where(h => h.FundId == fundId && string.Compare(h.Date, today) < 0)
             .ExecuteDeleteAsync();
 
-        var positions = new SortedDictionary<string, PositionState>(StringComparer.Ordinal);
-        var cash = fund.InitialCapital;
-        var tradeIndex = 0;
         string? previousDate = null;
         double? previousShareValue = null;
 
         foreach (var nav in navs)
         {
-            // Trades executados ate o fim do dia entram no NAV daquele dia
-            while (tradeIndex < trades.Count && string.CompareOrdinal(TradeDate(trades[tradeIndex]), nav.Date) <= 0)
-            {
-                var trade = trades[tradeIndex++];
-                var signedQuantity = trade.Side == "long" ? trade.Quantity : -trade.Quantity;
-                var (next, _) = PositionMath.Apply(
-                    positions.GetValueOrDefault(trade.Ticker), signedQuantity, trade.Price, trade.Side);
+            // Trades, cupons e resgates ate o fim do dia entram no NAV daquele dia
+            var state = FundLedger.Replay(fund.InitialCapital, trades, events, nav.Date);
+            var cash = state.Cash;
 
-                if (next == null)
-                    positions.Remove(trade.Ticker);
-                else
-                    positions[trade.Ticker] = next;
-
-                cash += -(signedQuantity * trade.Price);
-            }
-
-            var snapshots = positions.Select(kv =>
+            var snapshots = state.Positions.Select(kv =>
             {
                 var series = seriesByTicker.GetValueOrDefault(kv.Key);
                 var close = series?.ValueAt(nav.Date);
                 var price = close ?? kv.Value.AvgPrice;
                 var previousClose = previousDate == null ? null : series?.ValueAt(previousDate);
+
+                // Cupom pago no periodo faz parte do retorno do titulo (o PU cai no dia do pagamento)
+                var coupons = previousDate == null
+                    ? 0
+                    : events
+                        .Where(e => e.Ticker == kv.Key && e.Kind == TreasuryEventKinds.Coupon
+                            && string.CompareOrdinal(e.EventDate, previousDate) > 0
+                            && string.CompareOrdinal(e.EventDate, nav.Date) <= 0)
+                        .Sum(e => e.AmountPerUnit);
+
                 double? dailyReturn = close.HasValue && previousClose > 0
-                    ? (close.Value - previousClose.Value) / previousClose.Value
+                    ? (close.Value + coupons - previousClose.Value) / previousClose.Value
                     : null;
 
                 return (Ticker: kv.Key, State: kv.Value, Price: price,
@@ -209,9 +201,6 @@ public class NavHistoryRebuilder
 
         await _db.SaveChangesAsync();
     }
-
-    private static string TradeDate(Trade trade) =>
-        trade.ExecutedAt.Length >= 10 ? trade.ExecutedAt[..10] : trade.ExecutedAt;
 
     /// <summary>Le a parte yyyy-MM-dd de uma data ou timestamp.</summary>
     public static DateTime? ParseDate(string? value)

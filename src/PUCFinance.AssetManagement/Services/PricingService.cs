@@ -54,6 +54,7 @@ public class PricingService
 
     private readonly AppDbContext _db;
     private readonly YahooChartClient _yahoo;
+    private readonly TesouroDiretoClient _tesouro;
     private readonly ILogger<PricingService> _logger;
     private readonly Dictionary<string, ResolvedTicker?> _resolveCache = new();
     private readonly Dictionary<string, (DateTime From, YahooChart? Chart)> _chartCache = new();
@@ -77,10 +78,11 @@ public class PricingService
         { "ILA", ("ILS", 100) },
     };
 
-    public PricingService(AppDbContext db, YahooChartClient yahoo, ILogger<PricingService> logger)
+    public PricingService(AppDbContext db, YahooChartClient yahoo, TesouroDiretoClient tesouro, ILogger<PricingService> logger)
     {
         _db = db;
         _yahoo = yahoo;
+        _tesouro = tesouro;
         _logger = logger;
     }
 
@@ -121,6 +123,10 @@ public class PricingService
 
     private async Task<ResolvedTicker?> ResolveUncachedAsync(string ticker)
     {
+        // Titulos publicos: precificados pelo Tesouro Direto, em BRL
+        if (TesouroDireto.IsTreasuryTicker(ticker))
+            return new ResolvedTicker(ticker, BaseCurrency);
+
         var asset = await _db.Assets.AsNoTracking().FirstOrDefaultAsync(a => a.Ticker == ticker);
         if (asset != null)
         {
@@ -167,6 +173,10 @@ public class PricingService
     /// </summary>
     public async Task<PriceQuote?> GetQuoteAsync(string ticker)
     {
+        // Titulos publicos sao marcados pelo PU de venda (o que o fundo receberia hoje)
+        if (TesouroDireto.IsTreasuryTicker(ticker))
+            return await GetTreasuryQuoteAsync(ticker, "short");
+
         var resolved = await ResolveAsync(ticker);
         if (resolved == null)
             return null;
@@ -181,6 +191,25 @@ public class PricingService
 
         var nativePrice = close.Value / resolved.PriceDivisor;
         return new PriceQuote(nativePrice, resolved.Currency, fxRate.Value, nativePrice * fxRate.Value);
+    }
+
+    /// <summary>
+    /// Preco de execucao de um trade. Titulos publicos: compra pelo PU de compra e venda pelo PU de venda;
+    /// demais ativos: preco atual convertido para BRL.
+    /// </summary>
+    public async Task<PriceQuote?> GetTradeQuoteAsync(string ticker, string side)
+    {
+        ticker = ticker.Trim().ToUpper();
+        return TesouroDireto.IsTreasuryTicker(ticker)
+            ? await GetTreasuryQuoteAsync(ticker, side)
+            : await GetQuoteAsync(ticker);
+    }
+
+    private async Task<PriceQuote?> GetTreasuryQuoteAsync(string ticker, string side)
+    {
+        var quote = await _tesouro.GetLatestQuoteAsync(ticker);
+        var price = side == "long" ? quote?.BuyPrice : quote?.SellPrice;
+        return price > 0 ? new PriceQuote(price.Value, BaseCurrency, 1, price.Value) : null;
     }
 
     /// <summary>
@@ -211,6 +240,17 @@ public class PricingService
     /// </summary>
     public async Task<DailySeries?> GetBrlCloseHistoryAsync(string ticker, DateTime from)
     {
+        if (TesouroDireto.IsTreasuryTicker(ticker))
+        {
+            var history = await _tesouro.GetHistoryAsync(ticker);
+            var fromIso = TesouroDireto.ToIsoDate(from);
+            var treasuryPoints = history
+                .Where(q => string.CompareOrdinal(q.BaseDate, fromIso) >= 0 && q.SellPrice > 0)
+                .Select(q => new KeyValuePair<string, double>(q.BaseDate, q.SellPrice))
+                .ToList();
+            return treasuryPoints.Count > 0 ? new DailySeries(treasuryPoints) : null;
+        }
+
         var resolved = await ResolveAsync(ticker);
         if (resolved == null)
             return null;
