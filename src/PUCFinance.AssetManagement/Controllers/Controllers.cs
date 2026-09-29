@@ -20,7 +20,6 @@ public class FundsController : ControllerBase
     private readonly AppDbContext _db;
     private readonly ExportService _export;
     private readonly FundAccessService _fundAccess;
-    private const double AnnualRiskFreeRate = 0.1450;
 
     public FundsController(AppDbContext db, ExportService export, FundAccessService fundAccess)
     {
@@ -52,7 +51,8 @@ public class FundsController : ControllerBase
                 ShareValue: snapshot.ShareValue,
                 DailyReturn: snapshot.DailyReturn,
                 CashBalance: snapshot.CashBalance,
-                PositionCount: snapshot.Positions.Count
+                PositionCount: snapshot.Positions.Count,
+                Benchmark: FundBenchmarks.Resolve(fund.Benchmark)
             ));
         }
 
@@ -154,16 +154,63 @@ public class FundsController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<Fund>> Create([FromBody] CreateFundRequest request)
     {
+        var name = request.Name?.Trim() ?? string.Empty;
+        if (name.Length == 0)
+            return BadRequest(new { error = "Informe o nome do fundo" });
+
+        if (await _db.Funds.AnyAsync(f => f.Name == name))
+            return BadRequest(new { error = $"Ja existe um fundo chamado {name}" });
+
         if (request.TeamId.HasValue && !await _db.Teams.AnyAsync(t => t.Id == request.TeamId.Value))
             return BadRequest(new { error = "Time informado nao existe" });
 
+        if (request.Benchmark != null && !FundBenchmarks.IsValid(request.Benchmark))
+            return BadRequest(new { error = "Benchmark deve ser IBOVESPA ou CDI" });
+
+        // Gestores escolhidos: precisam existir, estar ativos e ser gestores
+        var managerIds = (request.ManagerIds ?? []).Distinct().ToList();
+        var managers = await _db.Users
+            .Where(u => managerIds.Contains(u.Id) && u.IsActive == 1 && u.Role == AppRoles.Manager)
+            .Select(u => u.Id)
+            .ToListAsync();
+        if (managers.Count != managerIds.Count)
+            return BadRequest(new { error = "Gestor invalido ou inativo na lista de gestores" });
+
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+
+        // Cada fundo tem um time com o mesmo nome; os gestores do fundo sao os membros desse time
+        var teamId = request.TeamId;
+        if (managerIds.Count > 0)
+        {
+            var team = await _db.Teams.FirstOrDefaultAsync(t => t.Name == name);
+            if (team != null && await _db.Funds.AnyAsync(f => f.TeamId == team.Id))
+                return BadRequest(new { error = $"Ja existe um time chamado {name} ligado a outro fundo" });
+
+            if (team == null)
+            {
+                team = new Team { Name = name };
+                _db.Teams.Add(team);
+                await _db.SaveChangesAsync();
+            }
+
+            var existingMembers = await _db.TeamMembers
+                .Where(m => m.TeamId == team.Id)
+                .Select(m => m.UserId)
+                .ToListAsync();
+            foreach (var userId in managerIds.Except(existingMembers))
+                _db.TeamMembers.Add(new TeamMember { TeamId = team.Id, UserId = userId });
+
+            teamId = team.Id;
+        }
+
         var fund = new Fund
         {
-            Name = request.Name,
-            Strategy = request.Strategy,
+            Name = name,
+            Strategy = string.IsNullOrWhiteSpace(request.Strategy) ? null : request.Strategy.Trim(),
             InitialCapital = request.InitialCapital,
             TotalShares = request.TotalShares,
-            TeamId = request.TeamId
+            TeamId = teamId,
+            Benchmark = FundBenchmarks.Resolve(request.Benchmark)
         };
 
         _db.Funds.Add(fund);
@@ -185,6 +232,7 @@ public class FundsController : ControllerBase
         });
 
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
         return CreatedAtAction(nameof(GetAll), new { id = fund.Id }, fund);
     }
 
@@ -260,7 +308,7 @@ public class FundsController : ControllerBase
         return Ok(navs);
     }
 
-    /// <summary>GET /api/funds/{id}/metrics — Métricas atuais</summary>
+    /// <summary>GET /api/funds/{id}/metrics — Métricas em tempo real (inclui a cota de hoje)</summary>
     [HttpGet("{id}/metrics")]
     public async Task<ActionResult<List<MetricsResponse>>> GetMetrics(int id)
     {
@@ -273,22 +321,32 @@ public class FundsController : ControllerBase
             .OrderBy(n => n.Date)
             .ToListAsync();
 
-        var latestMetricDate = await _db.Metrics
-            .Where(m => m.FundId == id)
-            .MaxAsync(m => (string?)m.Date);
+        var points = UpsertRealtimeNavHistory(navs, snapshot)
+            .Select(n => new SharePoint(n.Date, n.ShareValue))
+            .ToList();
+        var market = await MarketSeries.LoadAsync(_db);
+        var benchmark = FundBenchmarks.Resolve(fund.Benchmark);
 
-        var storedMetrics = latestMetricDate == null
-            ? new Dictionary<string, Metric>()
-            : await _db.Metrics
-                .Where(m => m.FundId == id && m.Date == latestMetricDate)
-                .ToDictionaryAsync(m => m.Period);
-
-        var metrics = new List<MetricsResponse>
-        {
-            BuildRealtimeMetric("inception", null, navs, snapshot, storedMetrics.GetValueOrDefault("inception")),
-            BuildRealtimeMetric("mtd", DateTime.Today.ToString("yyyy-MM-01"), navs, snapshot, storedMetrics.GetValueOrDefault("mtd")),
-            BuildRealtimeMetric("ytd", DateTime.Today.ToString("yyyy-01-01"), navs, snapshot, storedMetrics.GetValueOrDefault("ytd"))
-        };
+        var metrics = MetricPeriods.For(DateTime.Today)
+            .Select(p =>
+            {
+                var r = PerformanceMath.Compute(points, p.Start, market, benchmark);
+                return new MetricsResponse(
+                    Period: p.Period,
+                    CumulativeReturn: r.CumulativeReturn,
+                    AnnualizedReturn: r.AnnualizedReturn,
+                    Volatility: r.Volatility,
+                    SharpeRatio: r.SharpeRatio,
+                    MaxDrawdown: r.MaxDrawdown,
+                    Alpha: r.Alpha,
+                    Beta: r.Beta,
+                    BenchmarkName: benchmark,
+                    RiskFreeRate: r.RiskFreeRate,
+                    Observations: r.Observations,
+                    BusinessDays: r.BusinessDays,
+                    MinObservations: PerformanceMath.MinObservations);
+            })
+            .ToList();
 
         return Ok(metrics);
     }
@@ -520,56 +578,66 @@ public class FundsController : ControllerBase
         return Ok(results);
     }
 
-    /// <summary>GET /api/funds/{id}/cdi-comparison — Fundo vs CDI acumulado</summary>
-    [HttpGet("{id}/cdi-comparison")]
-    public async Task<ActionResult<CdiBenchmarkResponse>> GetCdiComparison(int id)
+    /// <summary>GET /api/funds/{id}/benchmark-comparison — Fundo vs a referencia dele (IBOVESPA ou CDI), acumulado</summary>
+    [HttpGet("{id}/benchmark-comparison")]
+    public async Task<ActionResult<BenchmarkComparisonResponse>> GetBenchmarkComparison(int id)
     {
         var fund = await _fundAccess.FindVisibleFundAsync(id);
         if (fund == null) return NotFound();
 
+        var benchmark = FundBenchmarks.Resolve(fund.Benchmark);
         var navs = await _db.NavHistory
             .Where(n => n.FundId == id)
             .OrderBy(n => n.Date)
             .ToListAsync();
 
         if (navs.Count == 0)
-            return Ok(new CdiBenchmarkResponse(0, 0, 0, "inception", new()));
+            return Ok(new BenchmarkComparisonResponse(benchmark, 0, 0, 0, "inception", new()));
 
         var snapshot = await GetRealtimeSnapshotAsync(id, fund);
         var realtimeNavs = UpsertRealtimeNavHistory(navs, snapshot);
         var startDate = realtimeNavs.First().Date;
         var firstShareValue = navs.FirstOrDefault()?.ShareValue ?? InitialShareValue(fund);
 
-        var cdis = await _db.Benchmarks
-            .Where(b => b.Name == "CDI" && string.Compare(b.Date, startDate) > 0)
-            .OrderBy(b => b.Date)
-            .ToListAsync();
-
-        // CDI acumulado desde o inicio do fundo
-        var cdiIndex = 0;
-        var cdiCumulativeFactor = 1.0;
-        var latestCdiCumulative = 0.0;
-
-        var series = realtimeNavs.Select(n =>
+        // Acumulado da referencia em cada data de NAV, a partir da data inicial do fundo
+        Func<string, double> benchmarkCumulative;
+        if (benchmark == FundBenchmarks.Cdi)
         {
-            while (cdiIndex < cdis.Count && string.Compare(cdis[cdiIndex].Date, n.Date) <= 0)
-            {
-                cdiCumulativeFactor *= 1 + (cdis[cdiIndex].DailyReturn ?? 0);
-                latestCdiCumulative = cdiCumulativeFactor - 1;
-                cdiIndex++;
-            }
+            var cdis = await _db.Benchmarks
+                .Where(b => b.Name == "CDI" && string.Compare(b.Date, startDate) > 0)
+                .OrderBy(b => b.Date)
+                .Select(b => new { b.Date, Rate = b.DailyReturn ?? 0 })
+                .ToListAsync();
 
-            var fundCum = firstShareValue > 0 ? (n.ShareValue / firstShareValue) - 1 : 0;
-            return new CdiComparisonPoint(n.Date, fundCum, latestCdiCumulative);
-        }).ToList();
+            benchmarkCumulative = date => cdis
+                .Where(c => string.CompareOrdinal(c.Date, date) <= 0)
+                .Aggregate(1.0, (factor, c) => factor * (1 + c.Rate)) - 1;
+        }
+        else
+        {
+            var closes = await _db.Benchmarks
+                .Where(b => b.Name == IbovespaService.BenchmarkName && b.Value > 0)
+                .Select(b => new { b.Date, b.Value })
+                .ToListAsync();
+            var index = new DailySeries(closes.Select(c => new KeyValuePair<string, double>(c.Date, c.Value)));
+            var start = index.ValueAt(startDate);
 
-        var lastFund = series.Last().FundCumulative;
-        var lastCdi = series.Last().CdiCumulative;
+            benchmarkCumulative = date => start > 0 && index.ValueAt(date) is { } value ? value / start.Value - 1 : 0;
+        }
 
-        return Ok(new CdiBenchmarkResponse(
-            FundReturn: lastFund,
-            CdiReturn: lastCdi,
-            ExcessReturn: lastFund - lastCdi,
+        var series = realtimeNavs
+            .Select(n => new BenchmarkComparisonPoint(
+                n.Date,
+                firstShareValue > 0 ? (n.ShareValue / firstShareValue) - 1 : 0,
+                benchmarkCumulative(n.Date)))
+            .ToList();
+
+        var last = series.Last();
+        return Ok(new BenchmarkComparisonResponse(
+            BenchmarkName: benchmark,
+            FundReturn: last.FundCumulative,
+            BenchmarkReturn: last.BenchmarkCumulative,
+            ExcessReturn: last.FundCumulative - last.BenchmarkCumulative,
             Period: "inception",
             Series: series
         ));
@@ -606,123 +674,6 @@ public class FundsController : ControllerBase
         });
 
         return result.OrderBy(n => n.Date).ToList();
-    }
-
-    private static MetricsResponse BuildRealtimeMetric(
-        string period,
-        string? periodStart,
-        List<NavHistory> closedNavs,
-        RealtimeFundSnapshot snapshot,
-        Metric? storedMetric)
-    {
-        var orderedNavs = closedNavs.OrderBy(n => n.Date).ToList();
-        var baseShareValue = GetMetricBaseShareValue(periodStart, orderedNavs, snapshot);
-        var shareValues = BuildMetricShareValues(periodStart, orderedNavs, snapshot, baseShareValue);
-        var returns = BuildMetricReturns(periodStart, orderedNavs, snapshot);
-        var cumulativeReturn = baseShareValue > 0 ? (snapshot.ShareValue / baseShareValue) - 1 : 0;
-        var annualizedReturn = AnnualizedReturn(returns, cumulativeReturn);
-        double? volatility = returns.Count >= 2 ? Volatility(returns) : null;
-        double? sharpe = volatility.HasValue && volatility.Value != 0
-            ? (annualizedReturn - AnnualRiskFreeRate) / volatility.Value
-            : null;
-        var maxDrawdown = MaxDrawdown(shareValues);
-
-        return new MetricsResponse(
-            Period: period,
-            CumulativeReturn: cumulativeReturn,
-            AnnualizedReturn: annualizedReturn,
-            Volatility: volatility,
-            SharpeRatio: sharpe,
-            MaxDrawdown: maxDrawdown,
-            Alpha: storedMetric?.Alpha,
-            Beta: storedMetric?.Beta,
-            BenchmarkName: storedMetric?.BenchmarkName);
-    }
-
-    private static double GetMetricBaseShareValue(
-        string? periodStart,
-        List<NavHistory> navs,
-        RealtimeFundSnapshot snapshot)
-    {
-        if (periodStart == null)
-            return InitialShareValue(snapshot.Fund);
-
-        var previousNav = navs
-            .Where(n => string.Compare(n.Date, periodStart) < 0)
-            .LastOrDefault();
-        if (previousNav != null)
-            return previousNav.ShareValue;
-
-        return InitialShareValue(snapshot.Fund);
-    }
-
-    private static List<double> BuildMetricShareValues(
-        string? periodStart,
-        List<NavHistory> navs,
-        RealtimeFundSnapshot snapshot,
-        double baseShareValue)
-    {
-        var values = new List<double> { baseShareValue };
-        values.AddRange(navs
-            .Where(n => n.Date != snapshot.Date)
-            .Where(n => periodStart == null || string.Compare(n.Date, periodStart) >= 0)
-            .Select(n => n.ShareValue));
-        values.Add(snapshot.ShareValue);
-        return values;
-    }
-
-    private static List<double> BuildMetricReturns(
-        string? periodStart,
-        List<NavHistory> navs,
-        RealtimeFundSnapshot snapshot)
-    {
-        var returns = navs
-            .Where(n => n.Date != snapshot.Date)
-            .Where(n => periodStart == null || string.Compare(n.Date, periodStart) >= 0)
-            .Where(n => n.DailyReturn.HasValue)
-            .Select(n => n.DailyReturn!.Value)
-            .ToList();
-
-        if (periodStart == null || string.Compare(snapshot.Date, periodStart) >= 0)
-            returns.Add(snapshot.DailyReturn);
-
-        return returns;
-    }
-
-    private static double AnnualizedReturn(List<double> returns, double cumulativeReturn)
-    {
-        if (returns.Count == 0) return 0;
-        if (cumulativeReturn <= -1) return -1;
-        return Math.Pow(1 + cumulativeReturn, 252.0 / returns.Count) - 1;
-    }
-
-    private static double Volatility(List<double> returns)
-    {
-        if (returns.Count < 2) return 0;
-        var mean = returns.Average();
-        var variance = returns.Sum(r => Math.Pow(r - mean, 2)) / (returns.Count - 1);
-        return Math.Sqrt(variance) * Math.Sqrt(252);
-    }
-
-    private static double MaxDrawdown(List<double> shareValues)
-    {
-        if (shareValues.Count < 2) return 0;
-
-        var peak = shareValues.First();
-        var maxDrawdown = 0.0;
-        foreach (var shareValue in shareValues)
-        {
-            if (shareValue > peak)
-                peak = shareValue;
-
-            if (peak <= 0) continue;
-
-            var drawdown = (peak - shareValue) / peak;
-            if (drawdown > maxDrawdown)
-                maxDrawdown = drawdown;
-        }
-
-        return -maxDrawdown;
     }
 
     private async Task<Dictionary<string, double>> GetRealtimeClassContributionsAsync(

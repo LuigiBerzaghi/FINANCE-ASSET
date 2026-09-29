@@ -55,6 +55,9 @@ public static class DatabaseSeeder
             if (!await ColumnExistsAsync(db, "funds", "team_id"))
                 await db.Database.ExecuteSqlRawAsync("ALTER TABLE funds ADD COLUMN team_id integer REFERENCES teams(id)");
 
+            if (!await ColumnExistsAsync(db, "funds", "benchmark"))
+                await db.Database.ExecuteSqlRawAsync("ALTER TABLE funds ADD COLUMN benchmark text");
+
             await EnsureTradeCurrencyColumnsAsync(db);
             await EnsureTreasuryEventsTableAsync(db);
             return;
@@ -91,6 +94,9 @@ public static class DatabaseSeeder
 
         if (!await ColumnExistsAsync(db, "funds", "team_id"))
             await db.Database.ExecuteSqlRawAsync("ALTER TABLE funds ADD COLUMN team_id integer REFERENCES teams(id)");
+
+        if (!await ColumnExistsAsync(db, "funds", "benchmark"))
+            await db.Database.ExecuteSqlRawAsync("ALTER TABLE funds ADD COLUMN benchmark text");
 
         await EnsureTradeCurrencyColumnsAsync(db);
         await EnsureTreasuryEventsTableAsync(db);
@@ -245,6 +251,8 @@ public static class DatabaseSeeder
             if (existingFunds.TryGetValue(seedFund.Name, out var fund))
             {
                 fund.TeamId ??= teamId;
+                // So preenche se ainda nao tem referencia: nao sobrescreve escolha feita depois
+                fund.Benchmark ??= seedFund.Benchmark;
                 continue;
             }
 
@@ -252,6 +260,7 @@ public static class DatabaseSeeder
             {
                 Name = seedFund.Name,
                 Strategy = seedFund.Strategy,
+                Benchmark = seedFund.Benchmark,
                 InitialCapital = 1_000_000,
                 TotalShares = 1_000_000,
                 TeamId = teamId
@@ -402,27 +411,27 @@ public static class DatabaseSeeder
         new("Thomas", "thomas@pucfinance")
     ];
 
-    private sealed record SeedFund(string Name, string? Strategy, string TeamName, string[] MemberEmails);
+    private sealed record SeedFund(string Name, string? Strategy, string TeamName, string[] MemberEmails, string Benchmark);
 
     private static readonly SeedFund[] Funds =
     [
         // Fundo de teste mantido do MVP, sem gestores (so o lider acessa)
-        new("Beta", "Long/Short", "Beta Team", []),
+        new("Beta", "Long/Short", "Beta Team", [], FundBenchmarks.Ibovespa),
 
         new("Renda Variável (Long & Short)", null, "Renda Variável (Long & Short)",
-            ["luigi@pucfinance", "braguinha@pucfinance"]),
+            ["luigi@pucfinance", "braguinha@pucfinance"], FundBenchmarks.Ibovespa),
         new("Renda Variável (Value Investing)", null, "Renda Variável (Value Investing)",
-            ["cathe@pucfinance", "italo@pucfinance"]),
+            ["cathe@pucfinance", "italo@pucfinance"], FundBenchmarks.Ibovespa),
         new("Best Ideas (Multimercado)", null, "Best Ideas (Multimercado)",
             [
                 "luigi@pucfinance", "braguinha@pucfinance", "cathe@pucfinance",
                 "italo@pucfinance", "helena@pucfinance", "bruna@pucfinance",
                 "thomas@pucfinance"
-            ]),
+            ], FundBenchmarks.Cdi),
         new("Renda Fixa (On shore & Off shore)", null, "Renda Fixa (On shore & Off shore)",
-            ["braguinha@pucfinance", "helena@pucfinance"]),
+            ["braguinha@pucfinance", "helena@pucfinance"], FundBenchmarks.Cdi),
         new("Multimercado (Raiz)", null, "Multimercado (Raiz)",
-            ["bruna@pucfinance", "thomas@pucfinance"])
+            ["bruna@pucfinance", "thomas@pucfinance"], FundBenchmarks.Cdi)
     ];
 
     private static async Task SeedAssetsAsync(AppDbContext db)

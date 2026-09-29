@@ -77,6 +77,7 @@ public class AppDbContext : DbContext
             e.Property(x => x.TotalShares).HasColumnName("total_shares");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.Property(x => x.IsActive).HasColumnName("is_active");
+            e.Property(x => x.Benchmark).HasColumnName("benchmark");
             e.HasIndex(x => x.Name).IsUnique();
             e.HasOne(x => x.Team).WithMany().HasForeignKey(x => x.TeamId);
         });

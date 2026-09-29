@@ -78,6 +78,29 @@ public class AuthController : ControllerBase
     }
 }
 
+/// <summary>GET /api/managers — Gestores ativos (para escolher quem opera um fundo novo)</summary>
+[ApiController]
+[Authorize(Roles = AppRoles.Leader)]
+[Route("api/managers")]
+public class ManagersController : ControllerBase
+{
+    private readonly AppDbContext _db;
+
+    public ManagersController(AppDbContext db) => _db = db;
+
+    [HttpGet]
+    public async Task<ActionResult<List<ManagerResponse>>> GetAll()
+    {
+        var managers = await _db.Users
+            .Where(u => u.IsActive == 1 && u.Role == AppRoles.Manager)
+            .OrderBy(u => u.Name)
+            .Select(u => new ManagerResponse(u.Id, u.Name, u.Email))
+            .ToListAsync();
+
+        return Ok(managers);
+    }
+}
+
 [ApiController]
 [Authorize(Roles = AppRoles.Leader)]
 [Route("api/teams")]

@@ -44,7 +44,22 @@ public class Fund
     public double TotalShares { get; set; } = 1_000_000;
     public string CreatedAt { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
     public int IsActive { get; set; } = 1;
+    public string? Benchmark { get; set; }   // IBOVESPA ou CDI (ver FundBenchmarks)
     public Team? Team { get; set; }
+}
+
+/// <summary>
+/// Referencia de cada fundo nas metricas. IBOVESPA: alpha/beta por regressao contra o indice
+/// (fundos de acoes). CDI: alpha = retorno anualizado acima do CDI e sem beta (multimercado, renda fixa).
+/// </summary>
+public static class FundBenchmarks
+{
+    public const string Ibovespa = "IBOVESPA";
+    public const string Cdi = "CDI";
+
+    public static bool IsValid(string? value) => value?.Trim().ToUpperInvariant() is Ibovespa or Cdi;
+
+    public static string Resolve(string? value) => IsValid(value) ? value!.Trim().ToUpperInvariant() : Ibovespa;
 }
 
 public class Position

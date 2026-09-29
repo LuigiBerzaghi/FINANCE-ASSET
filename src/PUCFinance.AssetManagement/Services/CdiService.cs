@@ -37,7 +37,7 @@ public class CdiService
                 .FirstOrDefaultAsync();
 
             var from = lastDate != null
-                ? DateTime.Parse(lastDate).AddDays(1)
+                ? DateTime.ParseExact(lastDate[..10], "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture).AddDays(1)
                 : DateTime.Today.AddMonths(-6); // 6 meses de historico inicial
 
             var to = DateTime.Today;
@@ -51,14 +51,20 @@ public class CdiService
                 + $"?formato=json&dataInicial={Uri.EscapeDataString(fromStr)}&dataFinal={Uri.EscapeDataString(toStr)}";
 
             using var response = await _http.GetAsync(url);
-            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            var content = await response.Content.ReadAsStringAsync();
+
+            // Sem CDI publicado no periodo (fim de semana, feriado ou o proprio dia: o Bacen publica com
+            // um dia de atraso) a API responde 404 com {"erro": ...} em vez de uma lista
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound || !content.TrimStart().StartsWith('['))
             {
-                _logger.LogWarning("Bacen nao retornou CDI para o periodo {From} a {To}", fromStr, toStr);
+                if (response.StatusCode != System.Net.HttpStatusCode.NotFound)
+                    response.EnsureSuccessStatusCode();
+
+                _logger.LogInformation("Bacen ainda sem CDI novo para {From} a {To}", fromStr, toStr);
                 return;
             }
 
             response.EnsureSuccessStatusCode();
-            var content = await response.Content.ReadAsStringAsync();
             var records = JsonSerializer.Deserialize<List<BcbRecord>>(content);
 
             if (records == null || records.Count == 0)
