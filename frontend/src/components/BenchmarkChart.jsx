@@ -1,41 +1,46 @@
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { fmtPct } from '../lib/format';
 
-export default function CdiChart({ cdiData }) {
-  if (!cdiData || !cdiData.series?.length) {
+// Fundo vs a referencia dele: IBOVESPA (fundos de acoes) ou CDI (multimercado e renda fixa)
+export default function BenchmarkChart({ data }) {
+  if (!data || !data.series?.length) {
     return (
       <div style={{ color: 'var(--text-muted)', padding: 20, fontSize: 12 }}>
-        CDI sera carregado apos rodar o batch
+        Comparacao sera carregada apos o batch
       </div>
     );
   }
 
-  const chartData = cdiData.series.map((p) => ({
+  const benchmark = data.benchmarkName || 'Referencia';
+  const labelFor = (key) => (key === 'fundo' ? 'Fundo' : benchmark);
+  const chartData = data.series.map((p) => ({
     date: p.date,
     fundo: p.fundCumulative * 100,
-    cdi: p.cdiCumulative * 100,
+    referencia: p.benchmarkCumulative * 100,
   }));
+
+  const statLabel = { fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 };
 
   return (
     <div>
       {/* Stats */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 12 }}>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>Fundo</div>
-          <div style={{ fontSize: 16, fontWeight: 600, color: cdiData.fundReturn >= 0 ? 'var(--green)' : 'var(--red)' }}>
-            {fmtPct(cdiData.fundReturn)}
+          <div style={statLabel}>Fundo</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: data.fundReturn >= 0 ? 'var(--green)' : 'var(--red)' }}>
+            {fmtPct(data.fundReturn)}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>CDI</div>
+          <div style={statLabel}>{benchmark}</div>
           <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--yellow)' }}>
-            {fmtPct(cdiData.cdiReturn)}
+            {fmtPct(data.benchmarkReturn)}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 10, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>Excesso</div>
-          <div style={{ fontSize: 16, fontWeight: 600, color: cdiData.excessReturn >= 0 ? 'var(--green)' : 'var(--red)' }}>
-            {fmtPct(cdiData.excessReturn)}
+          <div style={statLabel}>Excesso</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: data.excessReturn >= 0 ? 'var(--green)' : 'var(--red)' }}>
+            {fmtPct(data.excessReturn)}
           </div>
         </div>
       </div>
@@ -58,14 +63,14 @@ export default function CdiChart({ cdiData }) {
           />
           <Tooltip
             contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, fontSize: 12 }}
-            formatter={(v, name) => [`${v.toFixed(2)}%`, name === 'fundo' ? 'Fundo' : 'CDI']}
+            formatter={(v, name) => [`${v.toFixed(2)}%`, labelFor(name)]}
           />
           <Legend
             wrapperStyle={{ fontSize: 11, color: 'var(--text-muted)' }}
-            formatter={(value) => value === 'fundo' ? 'Fundo' : 'CDI'}
+            formatter={labelFor}
           />
           <Line type="monotone" dataKey="fundo" stroke="var(--chart-stroke)" strokeWidth={2} dot={false} />
-          <Line type="monotone" dataKey="cdi" stroke="var(--yellow)" strokeWidth={1.5} dot={false} strokeDasharray="4 4" />
+          <Line type="monotone" dataKey="referencia" stroke="var(--yellow)" strokeWidth={1.5} dot={false} strokeDasharray="4 4" />
         </LineChart>
       </ResponsiveContainer>
     </div>

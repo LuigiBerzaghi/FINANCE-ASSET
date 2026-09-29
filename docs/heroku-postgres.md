@@ -11,7 +11,7 @@ database on Heroku because dyno filesystems are ephemeral.
 - Database tables are created with EF Core `EnsureCreatedAsync()`.
 - Initial funds, cash rows, NAV day zero, and assets are seeded through C# code
   so the bootstrap works on both SQLite and PostgreSQL.
-- The daily GitHub Actions batch should call the deployed app URL.
+- The daily batch runs inside the app (`BatchSchedulerService`): once on startup and at 19:00 Brasilia time, Monday through Friday.
 
 ## Heroku Setup
 
@@ -60,27 +60,24 @@ Check logs:
 heroku logs --tail -a <app-name>
 ```
 
-## GitHub Actions Batch
+## Daily Batch
 
-The daily workflow calls:
+The app schedules the daily batch itself (`BatchSchedulerService`), so no external cron is needed:
 
-```text
-POST <APP_BASE_URL>/api/batch/run
+- once about 2 minutes after startup (catches up if the dyno restarted or missed the time);
+- every weekday at 19:00 Brasilia time.
+
+Business days without NAV (e.g. while the app was down) are filled from historical closes on the next run.
+
+Optional config var:
+
+```bash
+heroku config:set BATCH_SCHEDULE="0 19 * * 1-5" -a <app-name>   # cron, Brasilia time
+heroku config:set BATCH_SCHEDULE=off -a <app-name>              # disable
 ```
 
-Set this repository variable in GitHub:
-
-```text
-APP_BASE_URL=https://<app-name>.herokuapp.com
-```
-
-Set this repository secret in GitHub with the same value used in Heroku:
-
-```text
-BATCH_TOKEN=<strong-random-token>
-```
-
-The cron is scheduled at 21:00 UTC, which is 18:00 BRT, Monday through Friday.
+This requires a dyno that does not sleep (Basic or higher). `POST /api/batch/run` still runs it on demand
+(the "Run Batch" button, or `X-Batch-Token: <BATCH_TOKEN>` when that config var is set).
 
 ## Migrating Existing SQLite Data
 

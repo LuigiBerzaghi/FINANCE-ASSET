@@ -7,7 +7,9 @@ public record CreateFundRequest(
     string? Strategy,
     double InitialCapital = 1_000_000,
     double TotalShares = 1_000_000,
-    int? TeamId = null
+    int? TeamId = null,
+    string? Benchmark = null,  // IBOVESPA (padrao) ou CDI
+    int[]? ManagerIds = null   // gestores do fundo: cria o time do fundo com eles
 );
 
 public record LoginRequest(
@@ -31,6 +33,12 @@ public record AuthUserResponse(
 public record TeamResponse(
     int Id,
     string Name
+);
+
+public record ManagerResponse(
+    int Id,
+    string Name,
+    string Email
 );
 
 public record FundMembersResponse(
@@ -69,7 +77,8 @@ public record FundSummaryResponse(
     double ShareValue,
     double DailyReturn,
     double CashBalance,
-    int PositionCount
+    int PositionCount,
+    string Benchmark
 );
 
 public record PositionResponse(
@@ -112,7 +121,11 @@ public record MetricsResponse(
     double? MaxDrawdown,
     double? Alpha,
     double? Beta,
-    string? BenchmarkName
+    string? BenchmarkName,
+    double? RiskFreeRate,   // CDI do periodo, anualizado (base do Sharpe)
+    int Observations,       // intervalos entre NAVs usados no calculo
+    int BusinessDays,       // dias uteis do periodo
+    int MinObservations     // minimo para volatilidade, Sharpe, alpha e beta
 );
 
 public record BatchResultResponse(
@@ -187,18 +200,20 @@ public record ClassReturn(
 
 // ── CDI Benchmark ────────────────────────────────────
 
-public record CdiBenchmarkResponse(
+/// <summary>Fundo vs a referencia dele (IBOVESPA ou CDI), acumulado desde o inicio.</summary>
+public record BenchmarkComparisonResponse(
+    string BenchmarkName,
     double FundReturn,
-    double CdiReturn,
-    double ExcessReturn,        // fund - CDI
+    double BenchmarkReturn,
+    double ExcessReturn,        // fundo - referencia
     string Period,
-    List<CdiComparisonPoint> Series
+    List<BenchmarkComparisonPoint> Series
 );
 
-public record CdiComparisonPoint(
+public record BenchmarkComparisonPoint(
     string Date,
     double FundCumulative,      // retorno acumulado do fundo
-    double CdiCumulative        // retorno acumulado do CDI
+    double BenchmarkCumulative  // retorno acumulado da referencia
 );
 
 // ── Asset (para dropdown) ────────────────────────────

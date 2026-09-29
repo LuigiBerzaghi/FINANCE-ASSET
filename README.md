@@ -8,7 +8,7 @@ Sistema de paper trading para a célula de Asset Management da PUC Finance.
 - **Database:** SQLite (arquivo local, versionado no repo)
 - **Frontend:** React (TBD)
 - **Preços:** Yahoo Finance
-- **Automação:** GitHub Actions (batch diário às 18h BRT)
+- **Automação:** batch diário agendado dentro do próprio app (19h de Brasília, seg–sex)
 
 ## Setup Local
 
@@ -53,18 +53,17 @@ dotnet run --project src/PUCFinance.AssetManagement
 │   └── Program.cs          ← Entry point
 │
 ├── frontend/               ← React (TODO)
-│
-└── .github/workflows/
-    └── daily_update.yml    ← GitHub Actions
 ```
 
 ## Pipeline Diário
 
-1. GitHub Actions dispara às 18h BRT (21h UTC)
-2. `PricingService` busca preços no Yahoo Finance
-3. `NavCalculator` recalcula patrimônio e cota de cada fundo
-4. `MetricsCalculator` calcula Sharpe, Vol, Drawdown, Alpha, Beta
-5. Banco atualizado é commitado de volta no repo
+1. O próprio app roda o batch (`BatchSchedulerService`) ao subir e às 19h de Brasília, de segunda a sexta. O botão "Run Batch" roda na hora.
+2. Tesouro Direto: catálogo de títulos, cupons e vencimentos
+3. `PricingService` busca preços (Yahoo Finance, convertidos para BRL; títulos pelo CSV do Tesouro)
+4. CDI (Banco Central) e IBOVESPA (Yahoo) em `benchmarks`
+5. Dias úteis sem NAV são preenchidos com fechamentos históricos (`NavBackfillService`)
+6. `NavCalculator` recalcula patrimônio e cota de cada fundo
+7. `MetricsCalculator` calcula Retorno, Vol, Sharpe (vs CDI), Drawdown, Alpha, Beta (vs IBOVESPA)
 
 ## Métricas
 

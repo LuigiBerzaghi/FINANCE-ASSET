@@ -15,7 +15,7 @@ import TradeForm from './components/TradeForm';
 import CreateFundForm from './components/CreateFundForm';
 import ThemeToggle from './components/ThemeToggle';
 import ExposureChart from './components/ExposureChart';
-import CdiChart from './components/CdiChart';
+import BenchmarkChart from './components/BenchmarkChart';
 import ReturnByClass from './components/ReturnByClass';
 import LoginForm from './components/LoginForm';
 import FundMembers from './components/FundMembers';
@@ -25,7 +25,6 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authUser, setAuthUser] = useState(null);
   const [funds, setFunds] = useState([]);
-  const [teams, setTeams] = useState([]);
   const [activeFund, setActiveFund] = useState(null);
   const [positions, setPositions] = useState([]);
   const [navData, setNavData] = useState([]);
@@ -35,7 +34,7 @@ export default function App() {
   const [batchLoading, setBatchLoading] = useState(false);
   const [view, setView] = useState('dashboard');
   const [exposure, setExposure] = useState(null);
-  const [cdiData, setCdiData] = useState(null);
+  const [benchmarkData, setBenchmarkData] = useState(null);
   const [returnByClass, setReturnByClass] = useState([]);
   const [fundMembers, setFundMembers] = useState(null);
 
@@ -55,13 +54,13 @@ export default function App() {
     if (!activeFund) return;
     if (authUser?.role === 'leader') setFundMembers(null);
     try {
-      const [pos, nav, trd, met, exp, cdi, rbc, members] = await Promise.all([
+      const [pos, nav, trd, met, exp, bench, rbc, members] = await Promise.all([
         get(`/funds/${activeFund}/positions`),
         get(`/funds/${activeFund}/nav`),
         get(`/trades/fund/${activeFund}`),
         get(`/funds/${activeFund}/metrics`).catch(() => []),
         get(`/funds/${activeFund}/exposure`).catch(() => null),
-        get(`/funds/${activeFund}/cdi-comparison`).catch(() => null),
+        get(`/funds/${activeFund}/benchmark-comparison`).catch(() => null),
         get(`/funds/${activeFund}/return-by-class`).catch(() => []),
         authUser?.role === 'leader'
           ? get(`/funds/${activeFund}/members`).catch(() => null)
@@ -72,7 +71,7 @@ export default function App() {
       setTrades(trd);
       setMetrics(met);
       setExposure(exp);
-      setCdiData(cdi);
+      setBenchmarkData(bench);
       setReturnByClass(rbc);
       setFundMembers(members);
     } catch (e) {
@@ -114,13 +113,7 @@ export default function App() {
   }, [authUser, loadFunds]);
 
   useEffect(() => {
-    if (authUser?.role !== 'leader') {
-      setTeams([]);
-      if (view === 'funds') setView('dashboard');
-      return;
-    }
-
-    get('/teams').then(setTeams).catch(() => setTeams([]));
+    if (authUser?.role !== 'leader' && view === 'funds') setView('dashboard');
   }, [authUser, view]);
 
   useEffect(() => { loadFundData(); }, [activeFund, loadFundData]);
@@ -159,7 +152,6 @@ export default function App() {
   const logout = () => {
     clearAuthToken();
     setAuthUser(null);
-    setTeams([]);
     setFunds([]);
     setActiveFund(null);
     setFundMembers(null);
@@ -283,7 +275,8 @@ export default function App() {
       )}
 
       <div style={{ padding: 24, maxWidth: 1400, margin: '0 auto' }}>
-        {funds.length > 0 && (
+        {/* Na tela Fundos os cartoes ja listam (e abrem) cada fundo */}
+        {funds.length > 0 && view !== 'funds' && (
           <div style={{ marginBottom: 20 }}>
             <FundTabs funds={funds} active={activeFund} onChange={setActiveFund} />
           </div>
@@ -296,7 +289,7 @@ export default function App() {
                 <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 13 }}>
                   Crie o primeiro fundo para comecar a operar.
                 </p>
-                <CreateFundForm teams={teams} onCreated={loadFunds} />
+                <CreateFundForm onCreated={loadFunds} />
               </>
             ) : (
               <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>
@@ -323,8 +316,8 @@ export default function App() {
               <Section title="Patrimonio (NAV)">
                 <NavChart navData={navData} />
               </Section>
-              <Section title="Fundo vs CDI">
-                <CdiChart cdiData={cdiData} />
+              <Section title={`Fundo vs ${benchmarkData?.benchmarkName || 'referencia'}`}>
+                <BenchmarkChart data={benchmarkData} />
               </Section>
             </div>
 
@@ -391,7 +384,7 @@ export default function App() {
         {view === 'funds' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
             <Section title="Criar Novo Fundo">
-              <CreateFundForm teams={teams} onCreated={loadFunds} />
+              <CreateFundForm onCreated={loadFunds} />
             </Section>
             <Section title="Todos os Fundos">
               {funds.length === 0 ? (
