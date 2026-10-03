@@ -77,6 +77,15 @@ public record ClosePositionRequest(
 
 // ── Responses ─────────────────────────────────────────
 
+/// <summary>Base para a tela calcular o limite de venda a descoberto de um ativo (ver TradeService.GetShortLimitAsync).</summary>
+public record ShortLimitResponse(
+    double MaxShortExposure,      // fracao do patrimonio (1 = 100%)
+    double Cash,
+    double OtherPositionsValue,   // valor das demais posicoes (vendidas negativas)
+    double OtherShortExposure,    // soma (positiva) das demais posicoes vendidas
+    double HeldQuantity           // quantidade do ativo no fundo (vendido negativo)
+);
+
 public record FundSummaryResponse(
     int Id,
     string Name,
