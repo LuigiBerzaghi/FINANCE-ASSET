@@ -24,8 +24,8 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   const [priceLoading, setPriceLoading] = useState(false);
   const [bonds, setBonds] = useState(null);
   const [bondsError, setBondsError] = useState(null);
-  // Caixa do fundo e base do limite de venda a descoberto (100% do patrimonio) para o ativo escolhido
-  const [shortLimit, setShortLimit] = useState(null);
+  // Caixa do fundo e base dos limites de venda a descoberto (100%) e de exposicao bruta (200% do patrimonio) para o ativo escolhido
+  const [limits, setLimits] = useState(null);
   const [limitsVersion, setLimitsVersion] = useState(0);
   const isLeader = currentUser?.role === 'leader';
   const isTesouro = mode === 'tesouro';
@@ -41,12 +41,12 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
 
   useEffect(() => {
     if (!tradeFundId || !limitTicker) {
-      setShortLimit(null);
+      setLimits(null);
       return;
     }
     get(`/trades/limits/${tradeFundId}?ticker=${encodeURIComponent(limitTicker)}`)
-      .then(setShortLimit)
-      .catch(() => setShortLimit(null));
+      .then(setLimits)
+      .catch(() => setLimits(null));
   }, [tradeFundId, limitTicker, limitsVersion]);
 
   useEffect(() => {
@@ -181,29 +181,51 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   // Limite de venda a descoberto: o fundo nao pode ficar vendido em mais que 100% do patrimonio
   // (mesma conta do servidor, no preco desta tela; vender o que o fundo tem comprado nao conta)
   let shortAvailable = null;
-  if (shortLimit && !isTesouro && form.side === 'short' && unitPrice > 0) {
-    const held = shortLimit.heldQuantity;
-    const equity = shortLimit.cash + shortLimit.otherPositionsValue + held * unitPrice;
-    const limit = Math.max(0, equity) * shortLimit.maxShortExposure;
-    const shortBefore = shortLimit.otherShortExposure + Math.max(0, -held) * unitPrice;
+  if (limits && !isTesouro && form.side === 'short' && unitPrice > 0) {
+    const held = limits.heldQuantity;
+    const equity = limits.cash + limits.otherPositionsValue + held * unitPrice;
+    const limit = Math.max(0, equity) * limits.maxShortExposure;
+    const shortBefore = limits.otherShortExposure + Math.max(0, -held) * unitPrice;
     shortAvailable = Math.max(0, limit - shortBefore) + Math.max(0, held) * unitPrice;
   }
-  // Compra: limitada pelo caixa do fundo (mesma trava do servidor, que recusa caixa insuficiente)
-  const cashAvailable = shortLimit && form.side === 'long' ? Math.max(0, shortLimit.cash) : null;
-  const orderValue = (byValue ? estimatedQty : quantity) * (unitPrice || 0);
-  const overShortLimit = shortAvailable != null && orderValue > shortAvailable + 0.005;
-  const overCash = cashAvailable != null && unitPrice > 0 && orderValue > cashAvailable + 0.005;
-  let limitItem = null;
-  if (shortAvailable != null && !overShortLimit) {
-    limitItem = { label: 'Disponivel p/ vender', value: fmtBRL(shortAvailable), color: COLORS.leftover };
-  } else if (cashAvailable != null && !overCash) {
-    limitItem = { label: 'Caixa disponivel', value: fmtBRL(cashAvailable), color: COLORS.leftover };
+  // Exposicao bruta: comprado + vendido ate 200% do patrimonio (mesma conta do servidor). Cabe neste sentido
+  // ate desfazer a posicao contraria do ativo, mais a folga do limite; vender titulo publico so reduz
+  let grossAvailable = null;
+  if (limits && (!isTesouro || form.side === 'long') && unitPrice > 0) {
+    const held = limits.heldQuantity;
+    const equity = limits.cash + limits.otherPositionsValue + held * unitPrice;
+    const limit = Math.max(0, equity) * limits.maxGrossExposure;
+    const room = Math.max(limit - limits.otherGrossExposure, Math.abs(held) * unitPrice);
+    grossAvailable = Math.max(0, room - (form.side === 'long' ? 1 : -1) * held * unitPrice);
   }
-  // Valor abaixo da menor quantidade negociavel, acima do limite de venda ou sem caixa: aviso amarelo e botao bloqueado
+  // Compra: limitada pelo caixa do fundo (mesma trava do servidor, que recusa caixa insuficiente)
+  const cashAvailable = limits && form.side === 'long' ? Math.max(0, limits.cash) : null;
+  const orderValue = (byValue ? estimatedQty : quantity) * (unitPrice || 0);
+  // O limite que pesa mais neste sentido define o disponivel e o aviso
+  const sideLimit = form.side === 'long' ? cashAvailable : shortAvailable;
+  const grossBinds = grossAvailable != null && (sideLimit == null || grossAvailable < sideLimit);
+  const available = grossBinds ? grossAvailable : sideLimit;
+  const overLimit = available != null && unitPrice > 0 && orderValue > available + 0.005;
+  const overGross = overLimit && grossBinds;
+  const overShortLimit = overLimit && !grossBinds && form.side === 'short';
+  const overCash = overLimit && !grossBinds && form.side === 'long';
+  let limitItem = null;
+  if (available != null && !overLimit) {
+    const label = form.side === 'short' ? 'Disponivel p/ vender' : (grossBinds ? 'Disponivel p/ comprar' : 'Caixa disponivel');
+    limitItem = { label, value: fmtBRL(available), color: COLORS.leftover };
+  }
+  // Valor abaixo da menor quantidade negociavel, acima de um limite ou sem caixa: aviso amarelo e botao bloqueado
   const belowMinimum = byValue && amountValue > 0 && unitPrice > 0 && estimatedQty < quantityStep;
-  const blocked = belowMinimum || overShortLimit || overCash;
+  const blocked = belowMinimum || overLimit;
   let preview = null;
-  if (overCash && !belowMinimum) {
+  if (overGross && !belowMinimum) {
+    preview = (
+      <EstimateWarning>
+        Acima do limite de exposicao bruta: disponivel para {form.side === 'long' ? 'comprar' : 'vender'} {fmtBRL(available)}
+        {' '}(comprado + vendido ate {Math.round(limits.maxGrossExposure * 100)}% do patrimonio do fundo)
+      </EstimateWarning>
+    );
+  } else if (overCash && !belowMinimum) {
     preview = (
       <EstimateWarning>
         Caixa insuficiente: {isTesouro ? 'o custo' : 'a compra'} de {fmtBRL(orderValue)} passa do caixa disponivel
@@ -214,7 +236,7 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
     preview = (
       <EstimateWarning>
         Acima do limite de venda a descoberto: disponivel para vender {fmtBRL(shortAvailable)}
-        {' '}(limite de {Math.round(shortLimit.maxShortExposure * 100)}% do patrimonio do fundo)
+        {' '}(limite de {Math.round(limits.maxShortExposure * 100)}% do patrimonio do fundo)
       </EstimateWarning>
     );
   } else if (!byValue && unitPrice > 0 && quantity > 0) {
