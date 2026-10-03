@@ -45,6 +45,10 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
   const [error, setError] = useState(null);
 
   const qty = parseFloat(String(quantity).replace(',', '.'));
+  const isTotal = qty >= held - 1e-9;
+  // Metade arredondada para baixo: inteiro para acoes; centesimos para titulos publicos e cripto
+  const half = Number.isInteger(held) ? Math.floor(held / 2) : Math.floor((held / 2) * 100) / 100;
+  const pick = (value) => { setQuantity(String(value)); setError(null); };
   const estimated = position.currentPrice != null && qty > 0 ? qty * position.currentPrice : null;
 
   const submit = async () => {
@@ -62,7 +66,7 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
         thesis: thesis.trim(),
       });
       onDone(
-        `${qty >= held - 1e-9 ? 'Posicao fechada' : 'Posicao reduzida'}: ${isLong ? 'venda' : 'recompra'} de `
+        `${isTotal ? 'Posicao zerada' : 'Posicao reduzida'}: ${isLong ? 'venda' : 'recompra'} de `
         + `${fmtQty(trade.quantity)} ${trade.ticker} a ${fmtBRL(trade.price)} cada`
         + ` = ${fmtBRL(trade.price * trade.quantity)} no total`,
       );
@@ -83,8 +87,24 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
       </div>
       <div>
         <label style={labelStyle}>Quantidade (max. {fmtQty(held)})</label>
-        <input style={inputStyle} type="number" min="0" max={held} step="any" value={quantity}
-          onChange={(e) => { setQuantity(e.target.value); setError(null); }} />
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input style={inputStyle} type="number" min="0" max={held} step="any" value={quantity}
+            onChange={(e) => { setQuantity(e.target.value); setError(null); }} />
+          <button type="button" onClick={() => pick(held)} disabled={loading}
+            style={{
+              padding: '0 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent',
+              color: 'var(--text)', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap', opacity: loading ? 0.4 : 1,
+            }}>
+            Zerar
+          </button>
+          <button type="button" onClick={() => pick(half)} disabled={loading || !(half > 0)}
+            style={{
+              padding: '0 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent',
+              color: 'var(--text)', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap', opacity: !(half > 0) ? 0.4 : 1,
+            }}>
+            Metade
+          </button>
+        </div>
         <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
           {estimated != null ? `Valor estimado: ${fmtBRL(estimated)}` : ''}
         </div>
@@ -101,7 +121,7 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
             background: 'var(--accent-solid)', color: '#fff', fontWeight: 700, fontSize: 12,
             textTransform: 'uppercase', letterSpacing: '0.05em', opacity: loading ? 0.6 : 1,
           }}>
-          {loading ? 'Executando...' : (qty >= held - 1e-9 ? 'Fechar posicao' : 'Fechar parcialmente')}
+          {loading ? 'Executando...' : (isTotal ? 'Zerar posicao' : 'Fechar parcialmente')}
         </button>
         <button onClick={onCancel} disabled={loading}
           style={{
