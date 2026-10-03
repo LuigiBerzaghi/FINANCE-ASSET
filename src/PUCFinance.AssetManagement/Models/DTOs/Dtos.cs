@@ -65,6 +65,14 @@ public record ExecuteTradeRequest(
     string? ExecutedBy
 );
 
+/// <summary>Fechamento total ou parcial de uma posicao: o lado e definido pela posicao (nunca inverte).</summary>
+public record ClosePositionRequest(
+    int FundId,
+    string Ticker,
+    double Quantity,    // quanto fechar, ate a quantidade inteira da posicao
+    string? Thesis      // justificativa obrigatoria
+);
+
 // ── Responses ─────────────────────────────────────────
 
 public record FundSummaryResponse(

@@ -838,6 +838,27 @@ public class TradesController : ControllerBase
         }
     }
 
+    /// <summary>POST /api/trades/close — Fecha total ou parcialmente uma posicao (gestores e lider)</summary>
+    [HttpPost("close")]
+    public async Task<ActionResult<Trade>> Close([FromBody] ClosePositionRequest request)
+    {
+        try
+        {
+            if (!await _fundAccess.CanAccessFundAsync(request.FundId))
+                return NotFound(new { error = "Fundo nao encontrado" });
+
+            var trade = await _tradeService.ClosePositionAsync(request, _currentUser.Name);
+
+            QueuePostTradeBatch(trade.FundId, trade.Id);
+
+            return CreatedAtAction(nameof(GetByFund), new { fundId = trade.FundId }, trade);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
     /// <summary>Dispara o batch automatico depois de uma mudanca em trades.</summary>
     private void QueuePostTradeBatch(int fundId, int tradeId)
     {
@@ -867,7 +888,11 @@ public class TradesController : ControllerBase
         });
     }
 
-    /// <summary>DELETE /api/trades/{id} - Deleta um trade e reverte posicao/caixa</summary>
+    /// <summary>
+    /// DELETE /api/trades/{id} - Deleta um trade e reverte posicao/caixa. So o lider: serve para corrigir
+    /// boleta errada; gestores saem de uma posicao fechando-a (POST /api/trades/close).
+    /// </summary>
+    [Authorize(Roles = AppRoles.Leader)]
     [HttpDelete("{id}")]
     public async Task<ActionResult> Delete(int id)
     {

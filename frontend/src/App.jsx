@@ -332,7 +332,7 @@ export default function App() {
 
             <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr', gap: 20 }}>
               <Section title="Posicoes Abertas">
-                <PositionsTable positions={positions} />
+                <PositionsTable positions={positions} fundId={activeFund} onClosed={() => { loadFunds(); loadFundData(); }} />
               </Section>
               <Section title="Metricas">
                 <MetricsPanel metrics={metrics} />
@@ -357,7 +357,7 @@ export default function App() {
             )}
 
             <Section title="Historico de Trades">
-              <TradesTable trades={trades} onDelete={() => { loadFunds(); loadFundData(); }} />
+              <TradesTable trades={trades} canDelete={isLeader} onDelete={() => { loadFunds(); loadFundData(); }} />
             </Section>
 
             {isLeader && (
@@ -375,7 +375,7 @@ export default function App() {
               <TradeForm funds={funds} activeFund={activeFund} currentUser={authUser} onSubmit={() => { loadFunds(); loadFundData(); }} />
             </Section>
             <Section title="Trades Recentes">
-              <TradesTable trades={trades} onDelete={() => { loadFunds(); loadFundData(); }} />
+              <TradesTable trades={trades} canDelete={isLeader} onDelete={() => { loadFunds(); loadFundData(); }} />
             </Section>
           </div>
         )}
