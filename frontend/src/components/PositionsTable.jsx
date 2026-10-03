@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { get, post } from '../lib/api';
 import { fmtBRL, fmtPct, fmtQty, parseDecimal, quantityForAmount } from '../lib/format';
+import { COLORS, EstimateLine, EstimateWarning, sideColor } from './Estimate';
 
 const cols = [
   { key: 'ticker', label: 'Ticker', align: 'left' },
@@ -70,6 +71,52 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
   const pick = (value) => { setInputMode('quantity'); setQuantity(String(value)); setError(null); };
   const estimated = !byValue && position.currentPrice != null && qty > 0 ? qty * position.currentPrice : null;
 
+  // Previa: quantidade (destaque), valor (cor do lado do fechamento: vender = vermelho, recomprar = verde),
+  // sobra (cinza) e avisos (amarelo)
+  const closeSide = isLong ? 'short' : 'long';
+  const unitShort = isTreasury ? 'titulo(s)' : 'un.';
+  const actionLabel = isLong ? 'Valor da venda' : 'Valor da recompra';
+  // Valor que nao pode ser executado (abaixo do minimo ou acima da posicao): aviso amarelo e botao bloqueado
+  const blocked = byValue && amountValue > 0 && market.price > 0 && (qty < market.step || qty > held + 1e-9);
+  let preview = null;
+  if (!byValue && estimated != null) {
+    preview = (
+      <EstimateLine items={[
+        { label: 'Quantidade', value: `${fmtQty(qty)} ${unitShort}`, color: COLORS.quantity },
+        { label: `${actionLabel} estimado`, value: fmtBRL(estimated), color: sideColor(closeSide) },
+      ]} />
+    );
+  } else if (byValue && !(amountValue > 0) && positionValue != null) {
+    preview = (
+      <EstimateLine items={[
+        { label: 'Posicao inteira', value: `${fmtQty(held)} ${unitShort} = ${fmtBRL(positionValue)}`, color: sideColor(closeSide) },
+      ]} />
+    );
+  } else if (byValue && amountValue > 0 && market.price > 0 && qty < market.step) {
+    preview = (
+      <EstimateWarning>
+        Valor abaixo do minimo: {fmtBRL(market.step * market.price)} ({fmtQty(market.step)} {isTreasury ? 'titulo' : 'unidade'})
+      </EstimateWarning>
+    );
+  } else if (byValue && amountValue > 0 && market.price > 0 && qty > held + 1e-9) {
+    preview = (
+      <EstimateWarning>
+        Valor maior que a posicao (vale {fmtBRL(positionValue)} agora). Use Zerar para fechar tudo.
+      </EstimateWarning>
+    );
+  } else if (byValue && amountValue > 0 && market.price > 0) {
+    preview = (
+      <EstimateLine
+        items={[
+          { label: 'Quantidade', value: `≈ ${fmtQty(qty)} ${unitShort}${isTotal ? ' (posicao inteira)' : ''}`, color: COLORS.quantity },
+          { label: actionLabel, value: fmtBRL(qty * market.price), color: sideColor(closeSide) },
+          { label: 'Sobra', value: fmtBRL(Math.max(0, amountValue - qty * market.price)), color: COLORS.leftover },
+        ]}
+        note="Quantidade final calculada no preco da execucao"
+      />
+    );
+  }
+
   const switchToValue = () => {
     setInputMode('value');
     setError(null);
@@ -83,6 +130,7 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
 
   const submit = async () => {
     setError(null);
+    if (blocked) return;
     if (byValue) {
       if (!(amountValue > 0)) return setError('Informe o valor a fechar');
       if (market.price > 0 && qty < market.step) {
@@ -159,26 +207,21 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
             Metade
           </button>
         </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-          {!byValue && estimated != null && `Valor estimado: ${fmtBRL(estimated)}`}
-          {byValue && positionValue != null && !(amountValue > 0) && `A posicao inteira vale ${fmtBRL(positionValue)} agora`}
-          {byValue && amountValue > 0 && market.price > 0 && qty >= market.step && qty <= held + 1e-9
-            && `≈ ${fmtQty(qty)} ${isTreasury ? 'titulo(s)' : 'unidade(s)'} = ${fmtBRL(qty * market.price)}. Quantidade final no preco da execucao.`}
-        </div>
       </div>
       <div>
         <label style={labelStyle}>Justificativa (obrigatoria)</label>
         <input style={inputStyle} placeholder="Por que esta fechando a posicao..." value={thesis}
           onChange={(e) => { setThesis(e.target.value); setError(null); }} />
       </div>
+      {preview && <div style={{ gridColumn: '1 / -1' }}>{preview}</div>}
       <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button onClick={submit} disabled={loading}
+        <button onClick={submit} disabled={loading || blocked}
           style={{
-            padding: '8px 18px', borderRadius: 4, border: 'none', cursor: loading ? 'wait' : 'pointer',
+            padding: '8px 18px', borderRadius: 4, border: 'none', cursor: loading ? 'wait' : (blocked ? 'not-allowed' : 'pointer'),
             background: 'var(--accent-solid)', color: '#fff', fontWeight: 700, fontSize: 12,
-            textTransform: 'uppercase', letterSpacing: '0.05em', opacity: loading ? 0.6 : 1,
+            textTransform: 'uppercase', letterSpacing: '0.05em', opacity: loading || blocked ? 0.45 : 1,
           }}>
-          {loading ? 'Executando...' : (isTotal ? 'Zerar posicao' : 'Fechar parcialmente')}
+          {loading ? 'Executando...' : (blocked ? 'Fechar' : (isTotal ? 'Zerar posicao' : 'Fechar parcialmente'))}
         </button>
         <button onClick={onCancel} disabled={loading}
           style={{
