@@ -24,14 +24,29 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   const [priceLoading, setPriceLoading] = useState(false);
   const [bonds, setBonds] = useState(null);
   const [bondsError, setBondsError] = useState(null);
+  // Base do limite de venda a descoberto (100% do patrimonio), buscada quando o lado e SHORT
+  const [shortLimit, setShortLimit] = useState(null);
+  const [limitsVersion, setLimitsVersion] = useState(0);
   const isLeader = currentUser?.role === 'leader';
   const isTesouro = mode === 'tesouro';
   const defaultFundId = activeFund || funds[0]?.id || '';
+  const tradeFundId = isLeader ? form.fundId : defaultFundId;
+  const pricedTicker = quote?.ticker;
 
   useEffect(() => {
     if (!isLeader) return;
     setForm((f) => ({ ...f, fundId: defaultFundId ? String(defaultFundId) : '' }));
   }, [defaultFundId, isLeader]);
+
+  useEffect(() => {
+    if (isTesouro || form.side !== 'short' || !tradeFundId || !pricedTicker) {
+      setShortLimit(null);
+      return;
+    }
+    get(`/trades/limits/${tradeFundId}?ticker=${encodeURIComponent(pricedTicker)}`)
+      .then(setShortLimit)
+      .catch(() => setShortLimit(null));
+  }, [isTesouro, form.side, tradeFundId, pricedTicker, limitsVersion]);
 
   useEffect(() => {
     if (!isTesouro || bonds) return;
@@ -126,6 +141,7 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
       setAmount('');
       setCurrentPrice(null);
       setQuote(null);
+      setLimitsVersion((v) => v + 1);
       onSubmit?.();
       setTimeout(() => onSubmit?.(), 5000);
     } catch (e) {
@@ -161,14 +177,37 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   // Previa das contas: quantidade (destaque), valor (cor do lado), sobra (cinza) e avisos (amarelo)
   const valueLabel = isTesouro && form.side === 'long' ? 'Custo' : 'Valor';
   const unitShort = isTesouro ? 'titulo(s)' : 'un.';
-  // Valor abaixo da menor quantidade negociavel: aviso amarelo e botao bloqueado
-  const blocked = byValue && amountValue > 0 && unitPrice > 0 && estimatedQty < quantityStep;
+  // Limite de venda a descoberto: o fundo nao pode ficar vendido em mais que 100% do patrimonio
+  // (mesma conta do servidor, no preco desta tela; vender o que o fundo tem comprado nao conta)
+  let shortAvailable = null;
+  if (shortLimit && !isTesouro && form.side === 'short' && unitPrice > 0) {
+    const held = shortLimit.heldQuantity;
+    const equity = shortLimit.cash + shortLimit.otherPositionsValue + held * unitPrice;
+    const limit = Math.max(0, equity) * shortLimit.maxShortExposure;
+    const shortBefore = shortLimit.otherShortExposure + Math.max(0, -held) * unitPrice;
+    shortAvailable = Math.max(0, limit - shortBefore) + Math.max(0, held) * unitPrice;
+  }
+  const orderValue = (byValue ? estimatedQty : quantity) * (unitPrice || 0);
+  const overShortLimit = shortAvailable != null && orderValue > shortAvailable + 0.005;
+  const limitItem = shortAvailable != null && !overShortLimit
+    ? { label: 'Disponivel p/ vender', value: fmtBRL(shortAvailable), color: COLORS.leftover }
+    : null;
+  // Valor abaixo da menor quantidade negociavel ou acima do limite de venda: aviso amarelo e botao bloqueado
+  const blocked = (byValue && amountValue > 0 && unitPrice > 0 && estimatedQty < quantityStep) || overShortLimit;
   let preview = null;
-  if (!byValue && unitPrice > 0 && quantity > 0) {
+  if (overShortLimit && !(byValue && estimatedQty < quantityStep)) {
+    preview = (
+      <EstimateWarning>
+        Acima do limite de venda a descoberto: disponivel para vender {fmtBRL(shortAvailable)}
+        {' '}(limite de {Math.round(shortLimit.maxShortExposure * 100)}% do patrimonio do fundo)
+      </EstimateWarning>
+    );
+  } else if (!byValue && unitPrice > 0 && quantity > 0) {
     preview = (
       <EstimateLine items={[
         { label: 'Quantidade', value: `${fmtQty(quantity)} ${unitShort}`, color: COLORS.quantity },
         { label: `${valueLabel} estimado`, value: fmtBRL(unitPrice * quantity), color: sideColor(form.side) },
+        limitItem,
       ]} />
     );
   } else if (byValue && amountValue > 0 && !(unitPrice > 0)) {
@@ -186,10 +225,13 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
           { label: 'Quantidade', value: `≈ ${fmtQty(estimatedQty)} ${unitShort}`, color: COLORS.quantity },
           { label: valueLabel, value: fmtBRL(estimatedQty * unitPrice), color: sideColor(form.side) },
           { label: 'Sobra no caixa', value: fmtBRL(amountValue - estimatedQty * unitPrice), color: COLORS.leftover },
+          limitItem,
         ]}
         note="Quantidade final calculada no preco da execucao"
       />
     );
+  } else if (limitItem) {
+    preview = <EstimateLine items={[limitItem]} />;
   }
 
   return (
