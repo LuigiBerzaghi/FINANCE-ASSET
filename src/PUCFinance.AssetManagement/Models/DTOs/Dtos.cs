@@ -62,7 +62,8 @@ public record ExecuteTradeRequest(
     string Side,        // "long" ou "short"
     double Quantity,
     string? Thesis,
-    string? ExecutedBy
+    string? ExecutedBy,
+    double? Amount = null  // por valor (BRL): o servidor calcula a quantidade no preco da execucao
 );
 
 /// <summary>Fechamento total ou parcial de uma posicao: o lado e definido pela posicao (nunca inverte).</summary>
@@ -70,7 +71,8 @@ public record ClosePositionRequest(
     int FundId,
     string Ticker,
     double Quantity,    // quanto fechar, ate a quantidade inteira da posicao
-    string? Thesis      // justificativa obrigatoria
+    string? Thesis,     // justificativa obrigatoria
+    double? Amount = null  // ou quanto fechar em BRL (no lugar da quantidade)
 );
 
 // ── Responses ─────────────────────────────────────────

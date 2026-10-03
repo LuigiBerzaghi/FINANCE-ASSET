@@ -19,4 +19,15 @@ export const fmtRate = (code, rate) => {
 };
 
 export const fmtQty = (v) =>
-  v != null ? v.toLocaleString('pt-BR') : '—';
+  v != null ? v.toLocaleString('pt-BR', { maximumFractionDigits: 8 }) : '—';
+
+// Maior quantidade (multiplo de step) cujo valor nao passa de amount; mesma regra do servidor
+// (PricingService.QuantityForAmount). O servidor recalcula no preco da execucao.
+export const quantityForAmount = (amount, price, step) => {
+  if (!(amount > 0) || !(price > 0) || !(step > 0)) return 0;
+  const units = Math.floor((amount / price / step) * (1 + 1e-12) + 1e-9);
+  const decimals = step >= 1 ? 0 : Math.round(-Math.log10(step));
+  return Number((units * step).toFixed(decimals));
+};
+
+export const parseDecimal = (v) => parseFloat(String(v ?? '').replace(',', '.'));
