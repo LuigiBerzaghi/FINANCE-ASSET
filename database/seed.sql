@@ -7,7 +7,7 @@ INSERT OR IGNORE INTO teams (id, name) VALUES
     (3, 'Gamma Team');
 
 -- Usuarios de exemplo
--- Senhas: Lider/Admin@123, Alpha/Alpha@123, Beta/Beta@123, Gamma/Gamma@123
+-- Senhas: Lider = variavel LEADER_PASSWORD (ver DatabaseSeeder), Alpha/Alpha@123, Beta/Beta@123, Gamma/Gamma@123
 INSERT OR IGNORE INTO app_users (name, email, password_hash, role, team_id) VALUES
     ('Lider Geral', 'lider@pucfinance.local', 'pbkdf2$100000$/T3+b/2tq0KVjqxkBCQLiw==$TPK08IyhFVtzKxkJgxy3K5JBbg/6ptLhdw6gBJl2V+Y=', 'leader', NULL),
     ('Gestor Alpha', 'alpha@pucfinance.local', 'pbkdf2$100000$LOGxdCRjVwajD/e7apjB6A==$g+rwbQWCNnLqRdF7FPHrfkuKFaenwFItYaIlRcZOxbY=', 'manager', 1),

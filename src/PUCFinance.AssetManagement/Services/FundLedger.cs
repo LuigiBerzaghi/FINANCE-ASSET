@@ -5,21 +5,25 @@ namespace PUCFinance.AssetManagement.Services;
 /// <summary>P&L realizado por um trade ou por resgate no vencimento.</summary>
 public sealed record LedgerRealized(string Ticker, string ClosedAt, RealizedFill Fill);
 
-/// <summary>Resultado do replay: posicoes, caixa e quantidades/valores de cada evento de titulo publico.</summary>
+/// <summary>Resultado do replay: posicoes, caixa e quantidades de cada evento (cupom, resgate ou provento).</summary>
 public sealed class LedgerState
 {
     public SortedDictionary<string, PositionState> Positions { get; } = new(StringComparer.Ordinal);
     public double Cash { get; set; }
     public List<LedgerRealized> Realized { get; } = new();
 
-    /// <summary>Quantidade em carteira na data de cada evento (id → quantidade).</summary>
+    /// <summary>
+    /// Quantidade em carteira na vespera de cada evento (id → quantidade). Em proventos tem sinal
+    /// (vendido negativo); em cupons/resgates e zero quando o fundo nao tinha o titulo.
+    /// </summary>
     public Dictionary<int, double> EventQuantities { get; } = new();
 }
 
 /// <summary>
-/// Reaplica trades e eventos de titulos publicos (cupons e resgates) em ordem cronologica.
-/// Eventos de uma data valem para quem tinha o titulo na vespera, entao entram antes dos trades do mesmo dia;
-/// no vencimento o ultimo cupom e pago antes do resgate.
+/// Reaplica trades, eventos de titulos publicos (cupons e resgates) e proventos de acoes em ordem cronologica.
+/// Eventos de uma data valem para quem tinha o ativo na vespera, entao entram antes dos trades do mesmo dia;
+/// no vencimento o ultimo cupom e pago antes do resgate. Provento: o comprado recebe e o vendido paga
+/// (quantidade com sinal × valor por acao).
 /// </summary>
 public static class FundLedger
 {
@@ -31,7 +35,7 @@ public static class FundLedger
         string? untilDate = null)
     {
         var timeline = events
-            .Select(e => (Date: e.EventDate, Order: e.Kind == TreasuryEventKinds.Coupon ? 0 : 1, Stamp: e.EventDate, Id: e.Id, Trade: (Trade?)null, Event: (TreasuryEvent?)e))
+            .Select(e => (Date: e.EventDate, Order: e.Kind == TreasuryEventKinds.Maturity ? 1 : 0, Stamp: e.EventDate, Id: e.Id, Trade: (Trade?)null, Event: (TreasuryEvent?)e))
             .Concat(trades.Select(t => (Date: DateOf(t.ExecutedAt), Order: 2, Stamp: t.ExecutedAt, Id: t.Id, Trade: (Trade?)t, Event: (TreasuryEvent?)null)))
             .Where(x => untilDate == null || string.CompareOrdinal(x.Date, untilDate) <= 0)
             .OrderBy(x => x.Date, StringComparer.Ordinal)
@@ -52,9 +56,17 @@ public static class FundLedger
             }
 
             var ev = item.Event!;
-            var held = state.Positions.TryGetValue(ev.Ticker, out var position) && position.Quantity > 0
-                ? position.Quantity
-                : 0;
+            var quantity = state.Positions.TryGetValue(ev.Ticker, out var position) ? position.Quantity : 0;
+
+            // Provento: o vendido paga ao doador da acao (quantidade negativa debita o caixa)
+            if (ev.Kind == TreasuryEventKinds.Dividend)
+            {
+                state.EventQuantities[ev.Id] = quantity;
+                state.Cash += quantity * ev.AmountPerUnit;
+                continue;
+            }
+
+            var held = quantity > 0 ? quantity : 0;
             state.EventQuantities[ev.Id] = held;
             if (held <= 0)
                 continue;

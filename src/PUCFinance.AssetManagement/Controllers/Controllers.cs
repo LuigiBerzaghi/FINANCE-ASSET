@@ -369,9 +369,11 @@ public class FundsController : ControllerBase
                 .Where(r => r.FundId == id && r.Ticker == pos.Ticker)
                 .SumAsync(r => (double?)r.Pnl) ?? 0;
 
-            // Cupons recebidos de titulos publicos sao resultado realizado do ativo
+            // Cupons de titulos publicos e proventos de acoes sao resultado realizado do ativo
+            // (provento de posicao vendida tem total negativo: o fundo pagou)
             realizedTotal += await _db.TreasuryEvents
-                .Where(e => e.FundId == id && e.Ticker == pos.Ticker && e.Kind == TreasuryEventKinds.Coupon)
+                .Where(e => e.FundId == id && e.Ticker == pos.Ticker
+                    && (e.Kind == TreasuryEventKinds.Coupon || e.Kind == TreasuryEventKinds.Dividend))
                 .SumAsync(e => (double?)e.Total) ?? 0;
 
             var marketValue = CurrentMarketValue(pos);
@@ -696,9 +698,10 @@ public class FundsController : ControllerBase
             .Select(g => new { Ticker = g.Key, Pnl = g.Sum(r => r.Pnl) })
             .ToDictionaryAsync(x => x.Ticker, x => x.Pnl);
 
-        // Cupons de titulos publicos pagos hoje entram como resultado do dia do titulo
+        // Cupons de titulos publicos e proventos com data ex hoje entram como resultado do dia do ativo
         var couponsToday = await _db.TreasuryEvents
-            .Where(e => e.FundId == snapshot.Fund.Id && e.EventDate == snapshot.Date && e.Kind == TreasuryEventKinds.Coupon)
+            .Where(e => e.FundId == snapshot.Fund.Id && e.EventDate == snapshot.Date
+                && (e.Kind == TreasuryEventKinds.Coupon || e.Kind == TreasuryEventKinds.Dividend))
             .GroupBy(e => e.Ticker)
             .Select(g => new { Ticker = g.Key, Total = g.Sum(e => e.Total) })
             .ToListAsync();

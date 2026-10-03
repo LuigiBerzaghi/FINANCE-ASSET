@@ -41,6 +41,7 @@ builder.Services.AddScoped<NavHistoryRebuilder>();
 builder.Services.AddSingleton<TesouroDiretoClient>();
 builder.Services.AddScoped<TreasuryIndexService>();
 builder.Services.AddScoped<TreasuryService>();
+builder.Services.AddScoped<DividendService>();
 builder.Services.AddScoped<CurrencyMigrationService>();
 builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddSingleton<AuthTokenService>();

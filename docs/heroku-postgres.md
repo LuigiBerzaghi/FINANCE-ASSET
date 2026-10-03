@@ -42,6 +42,16 @@ Set a token for the daily batch endpoint:
 heroku config:set BATCH_TOKEN=<strong-random-token> -a <app-name>
 ```
 
+Set the leader password and the login signing key (never commit either to the
+repository). The leader password is applied at every startup; changing the
+variable changes the password. Without `LEADER_PASSWORD` the leader login is
+disabled:
+
+```bash
+heroku config:set LEADER_PASSWORD=<leader-password> -a <app-name>
+heroku config:set AUTH_TOKEN_SECRET=<strong-random-key> -a <app-name>
+```
+
 Deploy:
 
 ```bash

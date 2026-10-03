@@ -114,7 +114,7 @@ public class NavBackfillService
                     var previousPrice = previousDate == null ? null : series[ticker].ValueAt(previousDate);
                     var coupons = previousDate == null
                         ? 0
-                        : events.Where(e => e.Ticker == ticker && e.Kind == TreasuryEventKinds.Coupon
+                        : events.Where(e => e.Ticker == ticker && TreasuryEventKinds.IsIncome(e.Kind)
                                 && string.CompareOrdinal(e.EventDate, previousDate) > 0
                                 && string.CompareOrdinal(e.EventDate, day) <= 0)
                             .Sum(e => e.AmountPerUnit);

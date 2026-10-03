@@ -13,6 +13,7 @@ public class BatchService
     private readonly CdiService _cdi;
     private readonly IbovespaService _ibovespa;
     private readonly TreasuryService _treasury;
+    private readonly DividendService _dividends;
     private readonly NavBackfillService _backfill;
     private readonly ILogger<BatchService> _logger;
 
@@ -23,6 +24,7 @@ public class BatchService
         CdiService cdi,
         IbovespaService ibovespa,
         TreasuryService treasury,
+        DividendService dividends,
         NavBackfillService backfill,
         ILogger<BatchService> logger)
     {
@@ -32,6 +34,7 @@ public class BatchService
         _cdi = cdi;
         _ibovespa = ibovespa;
         _treasury = treasury;
+        _dividends = dividends;
         _backfill = backfill;
         _logger = logger;
     }
@@ -56,7 +59,7 @@ public class BatchService
         try
         {
             // 1. Tesouro Direto: catalogo de titulos, cupons e resgates (antes dos precos e do NAV)
-            _logger.LogInformation("Etapa 1/6: Tesouro Direto (catalogo, cupons e vencimentos)...");
+            _logger.LogInformation("Etapa 1/7: Tesouro Direto (catalogo, cupons e vencimentos)...");
             try
             {
                 await _treasury.SyncCatalogAsync();
@@ -70,17 +73,31 @@ public class BatchService
                 _logger.LogError(ex, "Etapa do Tesouro Direto falhou");
             }
 
-            // 2. Precos
-            _logger.LogInformation("Etapa 2/6: Buscando precos...");
+            // 2. Proventos de acoes (dividendos/JCP) na data ex, antes do NAV: o caixa recebe o que o preco perdeu
+            _logger.LogInformation("Etapa 2/7: Proventos de acoes (dividendos e JCP)...");
+            try
+            {
+                var dividends = await _dividends.ProcessDueDividendsAsync();
+                if (dividends > 0)
+                    _logger.LogInformation("Proventos: {Count} lancamento(s) de dividendo/JCP", dividends);
+            }
+            catch (Exception ex)
+            {
+                // Proventos pendentes entram no proximo batch (o replay credita na data ex correta)
+                _logger.LogError(ex, "Etapa de proventos falhou");
+            }
+
+            // 3. Precos
+            _logger.LogInformation("Etapa 3/7: Buscando precos...");
             var priceCount = await _pricing.FetchAndStorePricesAsync();
 
-            // 3. CDI e IBOVESPA (benchmarks das metricas e calendario de dias uteis)
-            _logger.LogInformation("Etapa 3/6: Atualizando CDI e IBOVESPA...");
+            // 4. CDI e IBOVESPA (benchmarks das metricas e calendario de dias uteis)
+            _logger.LogInformation("Etapa 4/7: Atualizando CDI e IBOVESPA...");
             await _cdi.FetchAndStoreCdiAsync();
             await _ibovespa.FetchAndStoreAsync();
 
-            // 4. Dias uteis passados sem NAV (batch que nao rodou): preenchidos com fechamentos historicos
-            _logger.LogInformation("Etapa 4/6: Preenchendo dias sem NAV...");
+            // 5. Dias uteis passados sem NAV (batch que nao rodou): preenchidos com fechamentos historicos
+            _logger.LogInformation("Etapa 5/7: Preenchendo dias sem NAV...");
             try
             {
                 var filled = await _backfill.FillMissingDaysAsync();
@@ -96,12 +113,12 @@ public class BatchService
             await TradeService.PortfolioLock.WaitAsync();
             try
             {
-                // 5. NAV de hoje
-                _logger.LogInformation("Etapa 5/6: Recalculando NAV...");
+                // 6. NAV de hoje
+                _logger.LogInformation("Etapa 6/7: Recalculando NAV...");
                 await _nav.CalculateAllAsync();
 
-                // 6. Metricas
-                _logger.LogInformation("Etapa 6/6: Calculando metricas...");
+                // 7. Metricas
+                _logger.LogInformation("Etapa 7/7: Calculando metricas...");
                 await _metrics.CalculateAllAsync();
             }
             finally

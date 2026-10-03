@@ -197,8 +197,10 @@ public class Asset
 }
 
 /// <summary>
-/// Cupom ou resgate de titulo publico creditado no caixa do fundo. AmountPerUnit e o valor por titulo;
+/// Evento que movimenta o caixa do fundo sem trade: cupom ou resgate de titulo publico, ou provento
+/// de acao (dividendo/JCP, valor bruto em BRL). AmountPerUnit e o valor por titulo/acao;
 /// Quantity e Total sao recalculados pela reconstrucao do fundo (quantidade em carteira na vespera).
+/// Em proventos a quantidade tem sinal: o fundo vendido (quantidade negativa) paga o provento.
 /// </summary>
 public class TreasuryEvent
 {
@@ -217,4 +219,10 @@ public static class TreasuryEventKinds
 {
     public const string Coupon = "coupon";
     public const string Maturity = "maturity";
+
+    /// <summary>Provento de acao (dividendo ou JCP) na data ex.</summary>
+    public const string Dividend = "dividend";
+
+    /// <summary>Cupons e proventos: renda que entra no retorno do ativo (o preco cai no dia do evento).</summary>
+    public static bool IsIncome(string kind) => kind is Coupon or Dividend;
 }

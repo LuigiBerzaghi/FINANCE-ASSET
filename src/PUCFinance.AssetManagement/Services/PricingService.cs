@@ -8,6 +8,9 @@ namespace PUCFinance.AssetManagement.Services;
 /// <summary>Cotacao na moeda original do ativo e convertida para BRL.</summary>
 public sealed record PriceQuote(double NativePrice, string Currency, double FxRate, double PriceBrl);
 
+/// <summary>Provento em dinheiro por acao na data ex: valor bruto na moeda do ativo e convertido para BRL.</summary>
+public sealed record DividendQuote(string ExDate, double NativeAmount, string Currency, double FxRate, double AmountBrl);
+
 /// <summary>
 /// Ticker do Yahoo e moeda de cotacao de um ativo. PriceDivisor converte cotacoes em
 /// centavos para a unidade da moeda (ex.: acoes de Londres em GBp → GBP = /100).
@@ -281,6 +284,44 @@ public class PricingService
         }
 
         return new DailySeries(points);
+    }
+
+    /// <summary>
+    /// Proventos em dinheiro (dividendos/JCP) com data ex a partir de <paramref name="from"/>, valor bruto por acao
+    /// convertido para BRL pelo cambio da data ex. Titulos publicos nao tem (cupons sao do TreasuryService).
+    /// Null se o ticker nao foi encontrado no Yahoo; proventos sem cambio ficam de fora (tenta no proximo batch).
+    /// </summary>
+    public async Task<List<DividendQuote>?> GetDividendsBrlAsync(string ticker, DateTime from)
+    {
+        if (TesouroDireto.IsTreasuryTicker(ticker))
+            return new List<DividendQuote>();
+
+        var resolved = await ResolveAsync(ticker);
+        if (resolved == null)
+            return null;
+
+        var chart = await GetChartAsync(resolved.YahooTicker, from);
+        if (chart == null)
+            return null;
+
+        var fromIso = from.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var result = new List<DividendQuote>();
+        foreach (var (date, amount) in chart.Dividends.Where(d => string.CompareOrdinal(d.Date, fromIso) >= 0))
+        {
+            var exDate = DateTime.ParseExact(date, "yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var fxRate = await GetFxToBrlAsync(resolved.Currency, exDate);
+            if (fxRate is not > 0)
+            {
+                _logger.LogWarning("Provento de {Ticker} em {Date}: sem cambio {Currency}BRL; tenta no proximo batch",
+                    ticker, date, resolved.Currency);
+                continue;
+            }
+
+            var native = amount / resolved.PriceDivisor;
+            result.Add(new DividendQuote(date, native, resolved.Currency, fxRate.Value, native * fxRate.Value));
+        }
+
+        return result;
     }
 
     private static string FxTicker(string currency) => $"{currency}{BaseCurrency}=X";

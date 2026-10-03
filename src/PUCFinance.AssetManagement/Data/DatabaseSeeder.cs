@@ -12,7 +12,7 @@ public static class DatabaseSeeder
         await EnsureAuthSchemaAsync(db);
         await RemoveFictitiousDataAsync(db);
         await SeedFundsAsync(db);
-        await SeedUsersAsync(db);
+        await SeedUsersAsync(db, logger);
         await SeedAssetsAsync(db);
 
         await db.SaveChangesAsync();
@@ -299,11 +299,11 @@ public static class DatabaseSeeder
         }
     }
 
-    private static async Task SeedUsersAsync(AppDbContext db)
+    private static async Task SeedUsersAsync(AppDbContext db, ILogger logger)
     {
         var passwordService = new PasswordService();
-        await MigrateLegacyLeaderAsync(db, passwordService);
-        await EnsureLeaderAsync(db, passwordService);
+        await MigrateLegacyLeaderAsync(db);
+        await EnsureLeaderAsync(db, passwordService, logger);
 
         // Gestores entram so com o login, sem senha
         foreach (var manager in Managers)
@@ -333,9 +333,9 @@ public static class DatabaseSeeder
 
     /// <summary>
     /// Converte o lider do MVP (lider@pucfinance.local / senha publica) no lider real,
-    /// preservando o mesmo usuario.
+    /// preservando o mesmo usuario. A senha e definida em seguida por EnsureLeaderAsync.
     /// </summary>
-    private static async Task MigrateLegacyLeaderAsync(AppDbContext db, PasswordService passwordService)
+    private static async Task MigrateLegacyLeaderAsync(AppDbContext db)
     {
         var legacyLeader = await db.Users.FirstOrDefaultAsync(u => u.Email == LegacyLeaderEmail);
         if (legacyLeader == null || await db.Users.AnyAsync(u => u.Email == Leader.Email))
@@ -343,24 +343,45 @@ public static class DatabaseSeeder
 
         legacyLeader.Name = Leader.Name;
         legacyLeader.Email = Leader.Email;
-        legacyLeader.PasswordHash = passwordService.HashPassword(LeaderPassword);
+        legacyLeader.PasswordHash = DisabledPasswordHash;
         legacyLeader.Role = AppRoles.Leader;
         await db.SaveChangesAsync();
     }
 
-    private static async Task EnsureLeaderAsync(AppDbContext db, PasswordService passwordService)
+    /// <summary>
+    /// A senha do lider vem da variavel LEADER_PASSWORD (nunca do codigo) e e aplicada a cada subida:
+    /// trocar a variavel troca a senha e a anterior deixa de valer. Sem a variavel o login do lider
+    /// fica desativado (nenhuma senha conhecida continua valendo).
+    /// </summary>
+    private static async Task EnsureLeaderAsync(AppDbContext db, PasswordService passwordService, ILogger logger)
     {
+        var password = Environment.GetEnvironmentVariable(LeaderPasswordVariable);
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            password = null;
+            logger.LogWarning("{Variable} nao definida: login do lider desativado ate a variavel ser configurada",
+                LeaderPasswordVariable);
+        }
+
         var leader = await db.Users.FirstOrDefaultAsync(u => u.Email == Leader.Email);
         if (leader == null)
         {
             await AddUserIfMissingAsync(db, Leader.Name, Leader.Email,
-                passwordService.HashPassword(LeaderPassword), AppRoles.Leader);
+                password == null ? DisabledPasswordHash : passwordService.HashPassword(password), AppRoles.Leader);
             return;
         }
 
-        // Senha do lider da versao anterior volta a ser a senha padrao
-        if (leader.PasswordHash == SupersededLeaderPasswordHash)
-            leader.PasswordHash = passwordService.HashPassword(LeaderPassword);
+        if (password == null)
+        {
+            leader.PasswordHash = DisabledPasswordHash;
+            return;
+        }
+
+        if (!passwordService.VerifyPassword(password, leader.PasswordHash))
+        {
+            leader.PasswordHash = passwordService.HashPassword(password);
+            logger.LogInformation("Senha do lider atualizada a partir de {Variable}", LeaderPasswordVariable);
+        }
     }
 
     private static async Task AddUserIfMissingAsync(
@@ -395,9 +416,10 @@ public static class DatabaseSeeder
     private sealed record SeedUser(string Name, string Email);
 
     private const string LegacyLeaderEmail = "lider@pucfinance.local";
-    private const string LeaderPassword = "Admin@123";
-    private const string SupersededLeaderPasswordHash =
-        "pbkdf2$100000$9BUCxwF2kPYOHPLgEZvEVg==$m48eT9Osy90xmk9suQ8T9eHVZa9xCkkutGP8mPSWpcA=";
+    private const string LeaderPasswordVariable = "LEADER_PASSWORD";
+
+    /// <summary>Marca de login desativado: nao e um hash valido, entao nenhuma senha confere.</summary>
+    private const string DisabledPasswordHash = "desativado";
     private static readonly SeedUser Leader = new("Gustavo", "gustavo@pucfinance");
 
     private static readonly SeedUser[] Managers =
