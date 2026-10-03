@@ -96,7 +96,7 @@ public class NavHistoryRebuilder
 
         foreach (var nav in navs)
         {
-            // Trades, cupons e resgates ate o fim do dia entram no NAV daquele dia
+            // Trades, cupons, resgates e proventos ate o fim do dia entram no NAV daquele dia
             var state = FundLedger.Replay(fund.InitialCapital, trades, events, nav.Date);
             var cash = state.Cash;
 
@@ -107,11 +107,11 @@ public class NavHistoryRebuilder
                 var price = close ?? kv.Value.AvgPrice;
                 var previousClose = previousDate == null ? null : series?.ValueAt(previousDate);
 
-                // Cupom pago no periodo faz parte do retorno do titulo (o PU cai no dia do pagamento)
+                // Cupom ou provento pago no periodo faz parte do retorno do ativo (o preco cai no dia do evento)
                 var coupons = previousDate == null
                     ? 0
                     : events
-                        .Where(e => e.Ticker == kv.Key && e.Kind == TreasuryEventKinds.Coupon
+                        .Where(e => e.Ticker == kv.Key && TreasuryEventKinds.IsIncome(e.Kind)
                             && string.CompareOrdinal(e.EventDate, previousDate) > 0
                             && string.CompareOrdinal(e.EventDate, nav.Date) <= 0)
                         .Sum(e => e.AmountPerUnit);

@@ -105,9 +105,11 @@ public class NavCalculator
             double? assetDailyReturn = null;
             if (previousPosPrice != null && previousPosPrice.Close > 0 && pos.CurrentPrice.HasValue)
             {
-                // Cupom de titulo publico pago desde o ultimo preco entra no retorno (o PU cai no dia do pagamento)
+                // Cupom de titulo publico ou provento de acao desde o ultimo preco entra no retorno
+                // (o preco cai no dia do pagamento/data ex)
                 var coupons = await _db.TreasuryEvents
-                    .Where(e => e.FundId == fundId && e.Ticker == pos.Ticker && e.Kind == TreasuryEventKinds.Coupon
+                    .Where(e => e.FundId == fundId && e.Ticker == pos.Ticker
+                        && (e.Kind == TreasuryEventKinds.Coupon || e.Kind == TreasuryEventKinds.Dividend)
                         && string.Compare(e.EventDate, previousPosPrice.Date) > 0
                         && string.Compare(e.EventDate, today) <= 0)
                     .SumAsync(e => (double?)e.AmountPerUnit) ?? 0;

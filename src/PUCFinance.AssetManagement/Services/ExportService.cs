@@ -199,11 +199,11 @@ public class ExportService
             wsReal.Columns().AdjustToContents();
         }
 
-        // ── Cupons e resgates de titulos publicos ──
+        // ── Cupons e resgates de titulos publicos e proventos de acoes ──
         if (treasuryEvents.Count > 0)
         {
-            var wsEvents = wb.AddWorksheet("Cupons e Resgates");
-            var eventHeaders = new[] { "Data", "Titulo", "Evento", "Valor por Titulo", "Quantidade", "Total" };
+            var wsEvents = wb.AddWorksheet("Cupons, Resgates e Proventos");
+            var eventHeaders = new[] { "Data", "Ativo", "Evento", "Valor por Unidade", "Quantidade", "Total" };
             for (int i = 0; i < eventHeaders.Length; i++)
             {
                 wsEvents.Cell(1, i + 1).Value = eventHeaders[i];
@@ -214,7 +214,12 @@ public class ExportService
                 var e = treasuryEvents[i];
                 wsEvents.Cell(i + 2, 1).Value = e.EventDate;
                 wsEvents.Cell(i + 2, 2).Value = e.Ticker;
-                wsEvents.Cell(i + 2, 3).Value = e.Kind == TreasuryEventKinds.Coupon ? "Cupom" : "Resgate (vencimento)";
+                wsEvents.Cell(i + 2, 3).Value = e.Kind switch
+                {
+                    TreasuryEventKinds.Coupon => "Cupom",
+                    TreasuryEventKinds.Dividend => "Provento (dividendo/JCP, data ex)",
+                    _ => "Resgate (vencimento)"
+                };
                 wsEvents.Cell(i + 2, 4).Value = e.AmountPerUnit;
                 wsEvents.Cell(i + 2, 5).Value = e.Quantity;
                 wsEvents.Cell(i + 2, 6).Value = e.Total;

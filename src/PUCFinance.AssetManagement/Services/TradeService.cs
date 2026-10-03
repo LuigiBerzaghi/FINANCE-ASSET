@@ -187,9 +187,9 @@ public class TradeService
     }
 
     /// <summary>
-    /// Reconstroi posicoes, P&L realizado e caixa de um fundo reaplicando todos os seus trades e
-    /// eventos de titulos publicos (cupons e resgates) em ordem cronologica. Tambem atualiza a
-    /// quantidade/valor de cada evento e remove eventos de titulos que o fundo nao tinha na data.
+    /// Reconstroi posicoes, P&L realizado e caixa de um fundo reaplicando todos os seus trades,
+    /// eventos de titulos publicos (cupons e resgates) e proventos em ordem cronologica. Tambem atualiza a
+    /// quantidade/valor de cada evento e remove eventos de ativos que o fundo nao tinha na vespera.
     /// Nao abre transacao nem pega a trava; o chamador decide.
     /// </summary>
     public async Task RebuildFundAsync(int fundId)
@@ -239,8 +239,10 @@ public class TradeService
 
         foreach (var ev in events)
         {
+            // Provento vale para comprado (recebe) e vendido (paga); cupom/resgate so para quem tinha o titulo
             var quantity = state.EventQuantities.GetValueOrDefault(ev.Id);
-            if (quantity <= 0)
+            var participated = ev.Kind == TreasuryEventKinds.Dividend ? quantity != 0 : quantity > 0;
+            if (!participated)
             {
                 _db.TreasuryEvents.Remove(ev);
                 continue;
