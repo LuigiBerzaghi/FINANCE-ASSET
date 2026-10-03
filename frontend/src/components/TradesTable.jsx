@@ -1,12 +1,13 @@
 import { fmtBRL, fmtMoney, fmtQty } from '../lib/format';
 import { del } from '../lib/api';
 
-export default function TradesTable({ trades, onDelete }) {
+// canDelete: so o lider apaga trades (correcao de boleta errada); gestores fecham posicoes
+export default function TradesTable({ trades, onDelete, canDelete = false }) {
   if (!trades?.length) {
     return <div style={{ color: 'var(--text-muted)', padding: 20 }}>Nenhum trade registrado</div>;
   }
 
-  const headers = ['Data', 'Ticker', 'Side', 'Qtd', 'Preco', 'Tese', 'Gestor', ''];
+  const headers = ['Data', 'Ticker', 'Side', 'Qtd', 'Preco', 'Tese', 'Gestor', ...(canDelete ? [''] : [])];
 
   const handleDelete = async (id, ticker) => {
     if (!confirm(`Deletar trade de ${ticker}? Isso reverte a posicao e o caixa.`)) return;
@@ -100,6 +101,7 @@ export default function TradesTable({ trades, onDelete }) {
               <td style={{ padding: '8px 10px', color: 'var(--text-dim)' }}>
                 {t.executedBy || '—'}
               </td>
+              {canDelete && (
               <td style={{ padding: '8px 10px', textAlign: 'center' }}>
                 <button
                   onClick={() => handleDelete(t.id, t.ticker)}
@@ -121,6 +123,7 @@ export default function TradesTable({ trades, onDelete }) {
                   Deletar
                 </button>
               </td>
+              )}
             </tr>
           ))}
         </tbody>

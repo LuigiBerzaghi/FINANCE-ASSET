@@ -27,9 +27,32 @@ public class TradeService
     }
 
     /// <summary>
-    /// Executa um trade: busca preco atual (convertido para BRL), registra no log, atualiza posicao e caixa.
+    /// Fecha total ou parcialmente uma posicao do fundo com um trade no sentido oposto (vende o comprado,
+    /// recompra o vendido), ao preco atual. A quantidade nao pode passar da posicao: fechar nunca inverte.
     /// </summary>
-    public async Task<Trade> ExecuteTradeAsync(ExecuteTradeRequest request)
+    public async Task<Trade> ClosePositionAsync(ClosePositionRequest request, string? executedBy)
+    {
+        if (string.IsNullOrWhiteSpace(request.Thesis))
+            throw new ArgumentException("Informe a justificativa do fechamento");
+
+        var ticker = request.Ticker.Trim().ToUpper();
+        var held = await _db.Positions
+            .Where(p => p.FundId == request.FundId && p.Ticker == ticker)
+            .Select(p => (double?)p.Quantity)
+            .FirstOrDefaultAsync()
+            ?? throw new InvalidOperationException($"O fundo nao tem posicao aberta em {ticker}");
+
+        var side = held > 0 ? "short" : "long";
+        return await ExecuteTradeAsync(
+            new ExecuteTradeRequest(request.FundId, ticker, side, request.Quantity, request.Thesis.Trim(), executedBy),
+            closeOnly: true);
+    }
+
+    /// <summary>
+    /// Executa um trade: busca preco atual (convertido para BRL), registra no log, atualiza posicao e caixa.
+    /// Com <paramref name="closeOnly"/>, o trade so pode reduzir ou zerar a posicao existente (fechamento).
+    /// </summary>
+    public async Task<Trade> ExecuteTradeAsync(ExecuteTradeRequest request, bool closeOnly = false)
     {
         var fund = await _db.Funds.FindAsync(request.FundId)
             ?? throw new InvalidOperationException($"Fundo {request.FundId} nao encontrado");
@@ -73,6 +96,21 @@ public class TradeService
             }
 
             var signedQuantity = request.Side == "long" ? request.Quantity : -request.Quantity;
+
+            // Fechamento: confere a posicao dentro da trava (outro trade pode ter mudado a posicao)
+            if (closeOnly)
+            {
+                var current = await _db.Positions
+                    .Where(p => p.FundId == request.FundId && p.Ticker == ticker)
+                    .Select(p => (double?)p.Quantity)
+                    .FirstOrDefaultAsync() ?? 0;
+                if (current == 0 || Math.Sign(current) == Math.Sign(signedQuantity))
+                    throw new InvalidOperationException($"O fundo nao tem posicao aberta em {ticker} para fechar");
+                if (request.Quantity > Math.Abs(current) + 1e-9)
+                    throw new InvalidOperationException(
+                        $"Quantidade maior que a posicao em {ticker}: o fundo tem {Math.Abs(current):N2}. Fechar nao pode inverter a posicao.");
+            }
+
             var cashImpact = -(signedQuantity * price);
 
             if (cash.Balance + cashImpact < 0)
