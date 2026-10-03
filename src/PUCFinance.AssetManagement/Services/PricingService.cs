@@ -324,6 +324,36 @@ public class PricingService
         return result;
     }
 
+    /// <summary>Fracao minima negociavel de criptomoedas (satoshi).</summary>
+    public const double CryptoQuantityStep = 0.00000001;
+
+    /// <summary>
+    /// Menor quantidade negociavel de um ativo, usada para converter um valor em BRL em quantidade:
+    /// titulos publicos em 0,01; criptomoedas em fracoes de 0,00000001; demais ativos em unidades inteiras.
+    /// </summary>
+    public async Task<double> QuantityStepAsync(string ticker)
+    {
+        ticker = ticker.Trim().ToUpper();
+        if (TesouroDireto.IsTreasuryTicker(ticker))
+            return TesouroDireto.QuantityStep;
+
+        var assetClass = await _db.Assets.AsNoTracking()
+            .Where(a => a.Ticker == ticker)
+            .Select(a => a.AssetClass)
+            .FirstOrDefaultAsync();
+        return assetClass == "crypto" ? CryptoQuantityStep : 1;
+    }
+
+    /// <summary>
+    /// Maior quantidade (multiplo de <paramref name="step"/>) cujo valor nao passa de <paramref name="amount"/>.
+    /// </summary>
+    public static double QuantityForAmount(double amount, double price, double step)
+    {
+        var units = Math.Floor(amount / price / step * (1 + 1e-12) + 1e-9);
+        var decimals = step >= 1 ? 0 : (int)Math.Round(-Math.Log10(step));
+        return Math.Round(units * step, decimals);
+    }
+
     private static string FxTicker(string currency) => $"{currency}{BaseCurrency}=X";
 
     /// <summary>

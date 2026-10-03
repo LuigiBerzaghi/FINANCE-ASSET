@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { post, get } from '../lib/api';
-import { fmtBRL, fmtMoney, fmtQty, fmtRate } from '../lib/format';
+import { fmtBRL, fmtMoney, fmtQty, fmtRate, parseDecimal, quantityForAmount } from '../lib/format';
+import { COLORS, EstimateLine, EstimateNote, EstimateWarning, sideColor } from './Estimate';
 
 const MODES = [
   { key: 'market', label: 'Acoes, ETFs e outros' },
@@ -12,6 +13,9 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   const [form, setForm] = useState({
     fundId: '', ticker: '', side: 'long', quantity: '', thesis: '',
   });
+  // Por quantidade ou por valor (BRL): por valor o servidor calcula a quantidade no preco da execucao
+  const [inputMode, setInputMode] = useState('quantity');
+  const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -49,11 +53,18 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   const selectedBond = isTesouro ? (bonds || []).find((b) => b.ticker === form.ticker) : null;
   const quantity = parseFloat(form.quantity || 0);
   const bondUnitPrice = selectedBond ? (form.side === 'long' ? selectedBond.buyPrice : selectedBond.sellPrice) : null;
+  const byValue = inputMode === 'value';
+  const unitPrice = isTesouro ? bondUnitPrice : currentPrice;
+  const quantityStep = isTesouro ? 0.01 : (quote?.quantityStep ?? 1);
+  const amountValue = parseDecimal(amount) || 0;
+  const estimatedQty = byValue ? quantityForAmount(amountValue, unitPrice, quantityStep) : 0;
+  const unitName = isTesouro ? 'titulo(s)' : 'unidade(s)';
 
   const switchMode = (next) => {
     if (next === mode) return;
     setMode(next);
     setForm((f) => ({ ...f, ticker: '', side: 'long', quantity: '' }));
+    setAmount('');
     setCurrentPrice(null);
     setQuote(null);
     setError(null);
@@ -79,6 +90,7 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   };
 
   const handleSubmit = async () => {
+    if (blocked) return;
     setError(null);
     setSuccess(null);
     setLoading(true);
@@ -88,13 +100,15 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
         fundId: parseInt(selectedFundId),
         ticker: form.ticker.trim().toUpperCase(),
         side: form.side,
-        quantity: parseFloat(form.quantity),
+        quantity: byValue ? 0 : parseFloat(form.quantity),
+        amount: byValue ? amountValue : null,
         thesis: form.thesis || null,
         executedBy: null,
       };
-      if (!payload.fundId || !payload.ticker || !payload.quantity) {
+      if (!payload.fundId || !payload.ticker || !(byValue ? payload.amount > 0 : payload.quantity)) {
         const what = isTesouro ? 'titulo' : 'ticker';
-        throw new Error(isLeader ? `Preencha fundo, ${what} e quantidade` : `Preencha ${what} e quantidade`);
+        const size = byValue ? 'valor' : 'quantidade';
+        throw new Error(isLeader ? `Preencha fundo, ${what} e ${size}` : `Preencha ${what} e ${size}`);
       }
       const trade = await post('/trades', payload);
       const nativeUnit = trade.currency && trade.currency !== 'BRL' && trade.fxRate > 0
@@ -109,6 +123,7 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
         + ` = ${fmtBRL(trade.price * trade.quantity)} no total`,
       );
       setForm((f) => ({ ...f, ticker: '', quantity: '', thesis: '' }));
+      setAmount('');
       setCurrentPrice(null);
       setQuote(null);
       onSubmit?.();
@@ -142,6 +157,40 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   };
 
   const sideLabel = (s) => (isTesouro ? (s === 'long' ? 'Comprar' : 'Vender') : s);
+
+  // Previa das contas: quantidade (destaque), valor (cor do lado), sobra (cinza) e avisos (amarelo)
+  const valueLabel = isTesouro && form.side === 'long' ? 'Custo' : 'Valor';
+  const unitShort = isTesouro ? 'titulo(s)' : 'un.';
+  // Valor abaixo da menor quantidade negociavel: aviso amarelo e botao bloqueado
+  const blocked = byValue && amountValue > 0 && unitPrice > 0 && estimatedQty < quantityStep;
+  let preview = null;
+  if (!byValue && unitPrice > 0 && quantity > 0) {
+    preview = (
+      <EstimateLine items={[
+        { label: 'Quantidade', value: `${fmtQty(quantity)} ${unitShort}`, color: COLORS.quantity },
+        { label: `${valueLabel} estimado`, value: fmtBRL(unitPrice * quantity), color: sideColor(form.side) },
+      ]} />
+    );
+  } else if (byValue && amountValue > 0 && !(unitPrice > 0)) {
+    preview = <EstimateNote>{isTesouro ? 'Selecione o titulo para ver a quantidade' : 'Informe o ticker para ver a quantidade'}</EstimateNote>;
+  } else if (byValue && amountValue > 0 && estimatedQty < quantityStep) {
+    preview = (
+      <EstimateWarning>
+        Valor abaixo do minimo: {fmtBRL(quantityStep * unitPrice)} ({fmtQty(quantityStep)} {isTesouro ? 'titulo' : 'unidade'})
+      </EstimateWarning>
+    );
+  } else if (byValue && amountValue > 0) {
+    preview = (
+      <EstimateLine
+        items={[
+          { label: 'Quantidade', value: `≈ ${fmtQty(estimatedQty)} ${unitShort}`, color: COLORS.quantity },
+          { label: valueLabel, value: fmtBRL(estimatedQty * unitPrice), color: sideColor(form.side) },
+          { label: 'Sobra no caixa', value: fmtBRL(amountValue - estimatedQty * unitPrice), color: COLORS.leftover },
+        ]}
+        note="Quantidade final calculada no preco da execucao"
+      />
+    );
+  }
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
@@ -224,19 +273,30 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
         </div>
       </div>
       <div>
-        <label style={labelStyle}>{isTesouro ? 'Quantidade de titulos' : 'Quantidade'}</label>
-        <input style={inputStyle} type="number" placeholder={isTesouro ? '1,00' : '100'} value={form.quantity}
-          step={isTesouro ? '0.01' : 'any'} min={isTesouro ? '0.01' : undefined}
-          onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} />
-        {!isTesouro && currentPrice && form.quantity && (
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
-            Custo estimado: {fmtBRL(currentPrice * quantity)}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 6 }}>
+          <label style={labelStyle}>
+            {byValue ? 'Valor (R$)' : (isTesouro ? 'Quantidade de titulos' : 'Quantidade')}
+          </label>
+          <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
+            {[['quantity', 'Qtd'], ['value', 'R$']].map(([key, label]) => (
+              <button key={key} type="button" onClick={() => { setInputMode(key); setError(null); }}
+                title={key === 'quantity' ? 'Por quantidade' : 'Por valor'}
+                style={{
+                  padding: '1px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                  border: `1px solid ${inputMode === key ? 'var(--accent)' : 'var(--border)'}`,
+                  background: inputMode === key ? 'var(--accent-dim)' : 'transparent',
+                  color: inputMode === key ? 'var(--accent)' : 'var(--text-muted)',
+                }}>{label}</button>
+            ))}
           </div>
-        )}
-        {isTesouro && bondUnitPrice > 0 && form.quantity && (
-          <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 4 }}>
-            {form.side === 'long' ? 'Custo estimado' : 'Valor estimado da venda'}: {fmtBRL(bondUnitPrice * quantity)}
-          </div>
+        </div>
+        {byValue ? (
+          <input style={inputStyle} type="number" placeholder="10000,00" value={amount} min="0" step="any"
+            onChange={(e) => setAmount(e.target.value)} />
+        ) : (
+          <input style={inputStyle} type="number" placeholder={isTesouro ? '1,00' : '100'} value={form.quantity}
+            step={isTesouro ? '0.01' : 'any'} min={isTesouro ? '0.01' : undefined}
+            onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} />
         )}
       </div>
       <div>
@@ -251,6 +311,7 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
           {currentUser?.name || 'Usuario autenticado'}
         </div>
       </div>
+      {preview && <div style={{ gridColumn: '1 / -1' }}>{preview}</div>}
       {selectedBond && (
         <div style={{
           gridColumn: '1 / -1', display: 'flex', flexWrap: 'wrap', gap: '8px 24px',
@@ -273,12 +334,12 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
       </div>
       <div style={{ gridColumn: '1 / -1' }}>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button onClick={handleSubmit} disabled={loading}
+          <button onClick={handleSubmit} disabled={loading || blocked}
             style={{
-              padding: '10px 24px', borderRadius: 4, border: 'none', cursor: loading ? 'wait' : 'pointer',
+              padding: '10px 24px', borderRadius: 4, border: 'none', cursor: loading ? 'wait' : (blocked ? 'not-allowed' : 'pointer'),
               background: 'var(--accent-solid)', color: '#fff', fontWeight: 700, fontSize: 13,
               textTransform: 'uppercase', letterSpacing: '0.05em',
-              opacity: loading ? 0.6 : 1,
+              opacity: loading || blocked ? 0.45 : 1,
               transition: 'background 0.2s',
             }}>
             {loading ? 'Buscando preco e executando...' : 'Executar Trade'}

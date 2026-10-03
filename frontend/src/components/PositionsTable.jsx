@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { post } from '../lib/api';
-import { fmtBRL, fmtPct, fmtQty } from '../lib/format';
+import { get, post } from '../lib/api';
+import { fmtBRL, fmtPct, fmtQty, parseDecimal, quantityForAmount } from '../lib/format';
+import { COLORS, EstimateLine, EstimateWarning, sideColor } from './Estimate';
 
 const cols = [
   { key: 'ticker', label: 'Ticker', align: 'left' },
@@ -34,27 +35,114 @@ const labelStyle = {
   display: 'block',
 };
 
+const TREASURY_TICKER = /^[A-Z]+-[A-Z]{3}\d{4}$/;
+
+const shortcutStyle = (disabled) => ({
+  padding: '0 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent',
+  color: 'var(--text)', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap', opacity: disabled ? 0.4 : 1,
+});
+
 // Fechamento total ou parcial de uma posicao: o lado vem da posicao (vende o comprado, recompra o vendido)
 // e a quantidade nao passa da posicao, entao fechar nunca inverte. Justificativa obrigatoria.
+// Por valor, o servidor calcula a quantidade no preco da execucao (arredondada para baixo).
 function ClosePanel({ position, fundId, onCancel, onDone }) {
   const held = Math.abs(position.quantity);
   const isLong = position.quantity > 0;
+  const isTreasury = TREASURY_TICKER.test(position.ticker);
+  const [inputMode, setInputMode] = useState('quantity');
   const [quantity, setQuantity] = useState(String(held));
+  const [amount, setAmount] = useState('');
+  // Preco de referencia para a estimativa por valor (titulo: PU de venda) e menor quantidade negociavel
+  const [market, setMarket] = useState({ price: position.currentPrice, step: isTreasury ? 0.01 : 1 });
   const [thesis, setThesis] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const qty = parseFloat(String(quantity).replace(',', '.'));
+  const byValue = inputMode === 'value';
+  const amountValue = parseDecimal(amount) || 0;
+  const positionValue = market.price > 0 ? held * market.price : null;
+  // Por valor: o valor da posicao inteira (em centavos, como aparece na tela) zera a posicao (mesma regra do servidor)
+  const coversAll = byValue && positionValue != null && amountValue >= Math.round(positionValue * 100) / 100 - 0.005;
+  const fromAmount = byValue ? quantityForAmount(amountValue, market.price, market.step) : 0;
+  const qty = byValue ? (coversAll && fromAmount < held ? held : fromAmount) : parseDecimal(quantity);
   const isTotal = qty >= held - 1e-9;
   // Metade arredondada para baixo: inteiro para acoes; centesimos para titulos publicos e cripto
   const half = Number.isInteger(held) ? Math.floor(held / 2) : Math.floor((held / 2) * 100) / 100;
-  const pick = (value) => { setQuantity(String(value)); setError(null); };
-  const estimated = position.currentPrice != null && qty > 0 ? qty * position.currentPrice : null;
+  const pick = (value) => { setInputMode('quantity'); setQuantity(String(value)); setError(null); };
+  const estimated = !byValue && position.currentPrice != null && qty > 0 ? qty * position.currentPrice : null;
+
+  // Previa: quantidade (destaque), valor (cor do lado do fechamento: vender = vermelho, recomprar = verde),
+  // sobra (cinza) e avisos (amarelo)
+  const closeSide = isLong ? 'short' : 'long';
+  const unitShort = isTreasury ? 'titulo(s)' : 'un.';
+  const actionLabel = isLong ? 'Valor da venda' : 'Valor da recompra';
+  // Valor que nao pode ser executado (abaixo do minimo ou acima da posicao): aviso amarelo e botao bloqueado
+  const blocked = byValue && amountValue > 0 && market.price > 0 && (qty < market.step || qty > held + 1e-9);
+  let preview = null;
+  if (!byValue && estimated != null) {
+    preview = (
+      <EstimateLine items={[
+        { label: 'Quantidade', value: `${fmtQty(qty)} ${unitShort}`, color: COLORS.quantity },
+        { label: `${actionLabel} estimado`, value: fmtBRL(estimated), color: sideColor(closeSide) },
+      ]} />
+    );
+  } else if (byValue && !(amountValue > 0) && positionValue != null) {
+    preview = (
+      <EstimateLine items={[
+        { label: 'Posicao inteira', value: `${fmtQty(held)} ${unitShort} = ${fmtBRL(positionValue)}`, color: sideColor(closeSide) },
+      ]} />
+    );
+  } else if (byValue && amountValue > 0 && market.price > 0 && qty < market.step) {
+    preview = (
+      <EstimateWarning>
+        Valor abaixo do minimo: {fmtBRL(market.step * market.price)} ({fmtQty(market.step)} {isTreasury ? 'titulo' : 'unidade'})
+      </EstimateWarning>
+    );
+  } else if (byValue && amountValue > 0 && market.price > 0 && qty > held + 1e-9) {
+    preview = (
+      <EstimateWarning>
+        Valor maior que a posicao (vale {fmtBRL(positionValue)} agora). Use Zerar para fechar tudo.
+      </EstimateWarning>
+    );
+  } else if (byValue && amountValue > 0 && market.price > 0) {
+    preview = (
+      <EstimateLine
+        items={[
+          { label: 'Quantidade', value: `≈ ${fmtQty(qty)} ${unitShort}${isTotal ? ' (posicao inteira)' : ''}`, color: COLORS.quantity },
+          { label: actionLabel, value: fmtBRL(qty * market.price), color: sideColor(closeSide) },
+          { label: 'Sobra', value: fmtBRL(Math.max(0, amountValue - qty * market.price)), color: COLORS.leftover },
+        ]}
+        note="Quantidade final calculada no preco da execucao"
+      />
+    );
+  }
+
+  const switchToValue = () => {
+    setInputMode('value');
+    setError(null);
+    get(`/prices/current/${position.ticker}`)
+      .then((d) => setMarket({
+        price: isTreasury ? d.sellPrice : d.price,
+        step: d.quantityStep || (isTreasury ? 0.01 : 1),
+      }))
+      .catch(() => {});
+  };
 
   const submit = async () => {
     setError(null);
-    if (!(qty > 0)) return setError('Informe a quantidade a fechar');
-    if (qty > held + 1e-9) return setError(`A quantidade nao pode passar da posicao (${fmtQty(held)})`);
+    if (blocked) return;
+    if (byValue) {
+      if (!(amountValue > 0)) return setError('Informe o valor a fechar');
+      if (market.price > 0 && qty < market.step) {
+        return setError(`Valor abaixo do minimo: ${fmtBRL(market.step * market.price)} (${fmtQty(market.step)} ${isTreasury ? 'titulo' : 'unidade'})`);
+      }
+      if (market.price > 0 && qty > held + 1e-9) {
+        return setError(`Valor maior que a posicao (vale ${fmtBRL(positionValue)} agora). Use Zerar para fechar tudo.`);
+      }
+    } else {
+      if (!(qty > 0)) return setError('Informe a quantidade a fechar');
+      if (qty > held + 1e-9) return setError(`A quantidade nao pode passar da posicao (${fmtQty(held)})`);
+    }
     if (!thesis.trim()) return setError('Informe a justificativa do fechamento');
 
     setLoading(true);
@@ -62,11 +150,13 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
       const trade = await post('/trades/close', {
         fundId: parseInt(fundId),
         ticker: position.ticker,
-        quantity: qty,
+        quantity: byValue ? 0 : qty,
+        amount: byValue ? amountValue : null,
         thesis: thesis.trim(),
       });
+      const zeroed = trade.quantity >= held - 1e-9;
       onDone(
-        `${isTotal ? 'Posicao zerada' : 'Posicao reduzida'}: ${isLong ? 'venda' : 'recompra'} de `
+        `${zeroed ? 'Posicao zerada' : 'Posicao reduzida'}: ${isLong ? 'venda' : 'recompra'} de `
         + `${fmtQty(trade.quantity)} ${trade.ticker} a ${fmtBRL(trade.price)} cada`
         + ` = ${fmtBRL(trade.price * trade.quantity)} no total`,
       );
@@ -86,27 +176,36 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
         {' '}O fechamento {isLong ? 'vende' : 'recompra'} ao preco de mercado no momento da execucao.
       </div>
       <div>
-        <label style={labelStyle}>Quantidade (max. {fmtQty(held)})</label>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 6 }}>
+          <label style={labelStyle}>{byValue ? 'Valor (R$)' : `Quantidade (max. ${fmtQty(held)})`}</label>
+          <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
+            {[['quantity', 'Qtd'], ['value', 'R$']].map(([key, label]) => (
+              <button key={key} type="button" disabled={loading}
+                onClick={() => (key === 'value' ? switchToValue() : (setInputMode('quantity'), setError(null)))}
+                title={key === 'quantity' ? 'Por quantidade' : 'Por valor'}
+                style={{
+                  padding: '1px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                  border: `1px solid ${inputMode === key ? 'var(--accent)' : 'var(--border)'}`,
+                  background: inputMode === key ? 'var(--accent-dim)' : 'transparent',
+                  color: inputMode === key ? 'var(--accent)' : 'var(--text-muted)',
+                }}>{label}</button>
+            ))}
+          </div>
+        </div>
         <div style={{ display: 'flex', gap: 6 }}>
-          <input style={inputStyle} type="number" min="0" max={held} step="any" value={quantity}
-            onChange={(e) => { setQuantity(e.target.value); setError(null); }} />
-          <button type="button" onClick={() => pick(held)} disabled={loading}
-            style={{
-              padding: '0 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent',
-              color: 'var(--text)', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap', opacity: loading ? 0.4 : 1,
-            }}>
+          {byValue ? (
+            <input style={inputStyle} type="number" min="0" step="any" placeholder="10000,00" value={amount}
+              onChange={(e) => { setAmount(e.target.value); setError(null); }} />
+          ) : (
+            <input style={inputStyle} type="number" min="0" max={held} step="any" value={quantity}
+              onChange={(e) => { setQuantity(e.target.value); setError(null); }} />
+          )}
+          <button type="button" onClick={() => pick(held)} disabled={loading} style={shortcutStyle(loading)}>
             Zerar
           </button>
-          <button type="button" onClick={() => pick(half)} disabled={loading || !(half > 0)}
-            style={{
-              padding: '0 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent',
-              color: 'var(--text)', fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap', opacity: !(half > 0) ? 0.4 : 1,
-            }}>
+          <button type="button" onClick={() => pick(half)} disabled={loading || !(half > 0)} style={shortcutStyle(!(half > 0))}>
             Metade
           </button>
-        </div>
-        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-          {estimated != null ? `Valor estimado: ${fmtBRL(estimated)}` : ''}
         </div>
       </div>
       <div>
@@ -114,14 +213,15 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
         <input style={inputStyle} placeholder="Por que esta fechando a posicao..." value={thesis}
           onChange={(e) => { setThesis(e.target.value); setError(null); }} />
       </div>
+      {preview && <div style={{ gridColumn: '1 / -1' }}>{preview}</div>}
       <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button onClick={submit} disabled={loading}
+        <button onClick={submit} disabled={loading || blocked}
           style={{
-            padding: '8px 18px', borderRadius: 4, border: 'none', cursor: loading ? 'wait' : 'pointer',
+            padding: '8px 18px', borderRadius: 4, border: 'none', cursor: loading ? 'wait' : (blocked ? 'not-allowed' : 'pointer'),
             background: 'var(--accent-solid)', color: '#fff', fontWeight: 700, fontSize: 12,
-            textTransform: 'uppercase', letterSpacing: '0.05em', opacity: loading ? 0.6 : 1,
+            textTransform: 'uppercase', letterSpacing: '0.05em', opacity: loading || blocked ? 0.45 : 1,
           }}>
-          {loading ? 'Executando...' : (isTotal ? 'Zerar posicao' : 'Fechar parcialmente')}
+          {loading ? 'Executando...' : (blocked ? 'Fechar' : (isTotal ? 'Zerar posicao' : 'Fechar parcialmente'))}
         </button>
         <button onClick={onCancel} disabled={loading}
           style={{

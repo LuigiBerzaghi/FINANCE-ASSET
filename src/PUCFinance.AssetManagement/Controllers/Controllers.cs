@@ -1019,7 +1019,8 @@ public class PricesController : ControllerBase
                 sellPrice = bond.SellPrice,
                 buyRate = bond.BuyRate,
                 sellRate = bond.SellRate,
-                baseDate = bond.BaseDate
+                baseDate = bond.BaseDate,
+                quantityStep = TesouroDireto.QuantityStep
             });
         }
 
@@ -1033,7 +1034,8 @@ public class PricesController : ControllerBase
             price = quote.PriceBrl,
             nativePrice = quote.NativePrice,
             currency = quote.Currency,
-            fxRate = quote.FxRate
+            fxRate = quote.FxRate,
+            quantityStep = await _pricing.QuantityStepAsync(ticker)
         });
     }
 }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using PUCFinance.AssetManagement.Data;
 using PUCFinance.AssetManagement.Models;
@@ -12,6 +13,8 @@ public class TradeService
     /// para que duas operacoes nao reconstruam o mesmo fundo ao mesmo tempo.
     /// </summary>
     public static readonly SemaphoreSlim PortfolioLock = new(1, 1);
+
+    private static readonly CultureInfo PtBr = CultureInfo.GetCultureInfo("pt-BR");
 
     private readonly AppDbContext _db;
     private readonly PricingService _pricing;
@@ -44,20 +47,28 @@ public class TradeService
 
         var side = held > 0 ? "short" : "long";
         return await ExecuteTradeAsync(
-            new ExecuteTradeRequest(request.FundId, ticker, side, request.Quantity, request.Thesis.Trim(), executedBy),
+            new ExecuteTradeRequest(request.FundId, ticker, side, request.Quantity, request.Thesis.Trim(), executedBy,
+                request.Amount),
             closeOnly: true);
     }
 
     /// <summary>
     /// Executa um trade: busca preco atual (convertido para BRL), registra no log, atualiza posicao e caixa.
     /// Com <paramref name="closeOnly"/>, o trade so pode reduzir ou zerar a posicao existente (fechamento).
+    /// Com Amount (valor em BRL), a quantidade e calculada no preco da execucao, arredondada para baixo pela
+    /// menor quantidade negociavel do ativo: o valor do trade nunca passa do valor pedido.
     /// </summary>
     public async Task<Trade> ExecuteTradeAsync(ExecuteTradeRequest request, bool closeOnly = false)
     {
         var fund = await _db.Funds.FindAsync(request.FundId)
             ?? throw new InvalidOperationException($"Fundo {request.FundId} nao encontrado");
 
-        if (request.Quantity <= 0)
+        var byAmount = request.Amount.HasValue;
+        if (byAmount && request.Quantity > 0)
+            throw new ArgumentException("Informe a quantidade ou o valor, nao os dois");
+        if (byAmount && !(request.Amount > 0))
+            throw new ArgumentException("Valor deve ser positivo");
+        if (!byAmount && request.Quantity <= 0)
             throw new ArgumentException("Quantidade deve ser positiva");
 
         if (request.Side is not ("long" or "short"))
@@ -73,6 +84,17 @@ public class TradeService
         if (quote == null || quote.PriceBrl <= 0)
             throw new InvalidOperationException($"Nao foi possivel obter preco para {request.Ticker}. Verifique se o ticker esta correto.");
         var price = quote.PriceBrl;
+
+        if (byAmount)
+        {
+            var step = await _pricing.QuantityStepAsync(ticker);
+            var quantity = PricingService.QuantityForAmount(request.Amount!.Value, price, step);
+            if (quantity < step)
+                throw new InvalidOperationException(string.Format(PtBr,
+                    "Valor abaixo do minimo para {0}: a menor quantidade negociavel ({1} {2}) custa {3:C2} agora",
+                    ticker, step.ToString("0.########", PtBr), isTreasury ? "titulo" : "unidade", step * price));
+            request = request with { Quantity = quantity };
+        }
 
         await PortfolioLock.WaitAsync();
         try
@@ -92,7 +114,7 @@ public class TradeService
                     .FirstOrDefaultAsync() ?? 0;
                 if (request.Quantity > held + 1e-9)
                     throw new InvalidOperationException(
-                        $"Venda maior que a posicao em {ticker}: o fundo tem {held:N2} titulo(s). Titulos publicos nao podem ser vendidos a descoberto.");
+                        $"Venda maior que a posicao em {ticker}: o fundo tem {held.ToString("N2", PtBr)} titulo(s). Titulos publicos nao podem ser vendidos a descoberto.");
             }
 
             var signedQuantity = request.Side == "long" ? request.Quantity : -request.Quantity;
@@ -106,9 +128,21 @@ public class TradeService
                     .FirstOrDefaultAsync() ?? 0;
                 if (current == 0 || Math.Sign(current) == Math.Sign(signedQuantity))
                     throw new InvalidOperationException($"O fundo nao tem posicao aberta em {ticker} para fechar");
+
+                // Por valor: o valor da posicao inteira (em centavos, como aparece na tela) zera a posicao,
+                // mesmo que o preco tenha casas alem dos centavos
+                if (byAmount && request.Quantity < Math.Abs(current)
+                    && request.Amount >= Math.Round(Math.Abs(current) * price, 2) - 0.005)
+                {
+                    request = request with { Quantity = Math.Abs(current) };
+                    signedQuantity = request.Side == "long" ? request.Quantity : -request.Quantity;
+                }
                 if (request.Quantity > Math.Abs(current) + 1e-9)
-                    throw new InvalidOperationException(
-                        $"Quantidade maior que a posicao em {ticker}: o fundo tem {Math.Abs(current):N2}. Fechar nao pode inverter a posicao.");
+                    throw new InvalidOperationException(byAmount
+                        ? string.Format(PtBr,
+                            "Valor maior que a posicao em {0}: a posicao inteira vale {1:C2} agora. Use Zerar para fechar tudo.",
+                            ticker, Math.Abs(current) * price)
+                        : $"Quantidade maior que a posicao em {ticker}: o fundo tem {Math.Abs(current).ToString("N2", PtBr)}. Fechar nao pode inverter a posicao.");
             }
 
             var cashImpact = -(signedQuantity * price);
@@ -156,8 +190,9 @@ public class TradeService
 
     private async Task ValidateTreasuryTradeAsync(string ticker, ExecuteTradeRequest request)
     {
+        // Por valor a quantidade e calculada depois, ja em multiplos de 0,01
         var cents = request.Quantity / TesouroDireto.QuantityStep;
-        if (Math.Abs(cents - Math.Round(cents)) > 1e-6)
+        if (!request.Amount.HasValue && Math.Abs(cents - Math.Round(cents)) > 1e-6)
             throw new ArgumentException("Titulos publicos sao negociados em multiplos de 0,01");
 
         var quote = await _tesouro.GetLatestQuoteAsync(ticker);
