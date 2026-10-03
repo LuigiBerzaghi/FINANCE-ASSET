@@ -22,6 +22,13 @@ public class TradeService
     /// </summary>
     public const double MaxShortExposure = 1.0;
 
+    /// <summary>
+    /// Limite de exposicao bruta: comprado + vendido (a preco de mercado, em modulo) nao pode passar de 200% do
+    /// patrimonio. Impede usar o dinheiro de uma venda a descoberto para alavancar sem teto (ex.: 130/30, 150/50
+    /// e 100/100 cabem; 200/100 nao). Vale para todos os fundos; ordens que reduzem a exposicao sempre passam.
+    /// </summary>
+    public const double MaxGrossExposure = 2.0;
+
     private readonly AppDbContext _db;
     private readonly PricingService _pricing;
     private readonly TesouroDiretoClient _tesouro;
@@ -161,6 +168,9 @@ public class TradeService
                 throw new InvalidOperationException(
                     $"Caixa insuficiente. Disponivel: {cash.Balance:N2}, necessario: {-cashImpact:N2}");
 
+            // Comprado + vendido: o fundo nao pode ficar exposto em mais que 200% do patrimonio
+            await EnsureGrossLimitAsync(request.FundId, ticker, signedQuantity, price, cash.Balance);
+
             // 1. Registra o trade
             var trade = new Trade
             {
@@ -230,22 +240,57 @@ public class TradeService
     }
 
     /// <summary>
-    /// Dados para a tela calcular quanto ainda da para vender de um ativo sem passar do limite de venda a
-    /// descoberto (no preco que a tela tiver): caixa, valor e vendido das demais posicoes e a quantidade do ativo.
+    /// Recusa a ordem que aumentaria a exposicao bruta do fundo (comprado + vendido) alem de MaxGrossExposure
+    /// do patrimonio. Mesma avaliacao do limite de venda: o ativo negociado no preco da execucao, as demais
+    /// posicoes no ultimo preco do batch; o trade em si nao muda o patrimonio.
     /// </summary>
-    public async Task<ShortLimitResponse> GetShortLimitAsync(int fundId, string? ticker)
+    private async Task EnsureGrossLimitAsync(int fundId, string ticker, double signedQuantity, double price, double cash)
+    {
+        var positions = await _db.Positions.AsNoTracking().Where(p => p.FundId == fundId).ToListAsync();
+        var current = positions.FirstOrDefault(p => p.Ticker == ticker)?.Quantity ?? 0;
+        var others = positions.Where(p => p.Ticker != ticker).ToList();
+
+        var equity = cash + current * price + others.Sum(p => p.Quantity * (p.CurrentPrice ?? p.AvgPrice));
+        var otherGross = others.Sum(p => Math.Abs(p.Quantity) * (p.CurrentPrice ?? p.AvgPrice));
+        var grossBefore = otherGross + Math.Abs(current) * price;
+        var grossAfter = otherGross + Math.Abs(current + signedQuantity) * price;
+
+        // Ordem que reduz ou mantem a exposicao (vender o comprado, recomprar o vendido) nao tem limite
+        if (grossAfter <= grossBefore + 1e-9)
+            return;
+
+        var limit = Math.Max(0, equity) * MaxGrossExposure;
+        if (grossAfter <= limit + 0.005)
+            return;
+
+        // Quanto ainda cabe no mesmo sentido: ate desfazer a posicao contraria, mais a folga do limite
+        var room = Math.Max(limit - otherGross, Math.Abs(current) * price);
+        var available = Math.Max(0, room - Math.Sign(signedQuantity) * current * price);
+        var share = equity > 0 ? (grossAfter / equity * 100).ToString("N0", PtBr) + "% do patrimonio" : "com patrimonio zerado ou negativo";
+        throw new InvalidOperationException(string.Format(PtBr,
+            "Exposicao bruta acima do limite: comprado + vendido ficaria em {0:C2} ({1}). O limite e {2:N0}% do patrimonio ({3:C2}). Maximo para {4} agora: {5:C2}.",
+            grossAfter, share, MaxGrossExposure * 100, limit, signedQuantity > 0 ? "comprar" : "vender", available));
+    }
+
+    /// <summary>
+    /// Dados para a tela calcular quanto ainda da para comprar ou vender de um ativo sem passar dos limites
+    /// (no preco que a tela tiver): caixa, valor, vendido e exposicao bruta das demais posicoes e a quantidade do ativo.
+    /// </summary>
+    public async Task<TradeLimitsResponse> GetTradeLimitsAsync(int fundId, string? ticker)
     {
         ticker = ticker?.Trim().ToUpper() ?? string.Empty;
         var cash = (await _db.Cash.AsNoTracking().FirstOrDefaultAsync(c => c.FundId == fundId))?.Balance ?? 0;
         var positions = await _db.Positions.AsNoTracking().Where(p => p.FundId == fundId).ToListAsync();
         var others = positions.Where(p => p.Ticker != ticker).ToList();
 
-        return new ShortLimitResponse(
+        return new TradeLimitsResponse(
             MaxShortExposure,
             cash,
             others.Sum(p => p.Quantity * (p.CurrentPrice ?? p.AvgPrice)),
             others.Where(p => p.Quantity < 0).Sum(p => -p.Quantity * (p.CurrentPrice ?? p.AvgPrice)),
-            positions.FirstOrDefault(p => p.Ticker == ticker)?.Quantity ?? 0);
+            positions.FirstOrDefault(p => p.Ticker == ticker)?.Quantity ?? 0,
+            MaxGrossExposure,
+            others.Sum(p => Math.Abs(p.Quantity) * (p.CurrentPrice ?? p.AvgPrice)));
     }
 
     private async Task ValidateTreasuryTradeAsync(string ticker, ExecuteTradeRequest request)

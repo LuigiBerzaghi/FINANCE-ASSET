@@ -859,14 +859,14 @@ public class TradesController : ControllerBase
         }
     }
 
-    /// <summary>GET /api/trades/limits/{fundId}?ticker= — Base do limite de venda a descoberto (100% do patrimonio)</summary>
+    /// <summary>GET /api/trades/limits/{fundId}?ticker= — Base dos limites de venda a descoberto (100%) e de exposicao bruta (200% do patrimonio)</summary>
     [HttpGet("limits/{fundId}")]
-    public async Task<ActionResult<ShortLimitResponse>> GetLimits(int fundId, [FromQuery] string? ticker)
+    public async Task<ActionResult<TradeLimitsResponse>> GetLimits(int fundId, [FromQuery] string? ticker)
     {
         if (!await _fundAccess.CanAccessFundAsync(fundId))
             return NotFound(new { error = "Fundo nao encontrado" });
 
-        return Ok(await _tradeService.GetShortLimitAsync(fundId, ticker));
+        return Ok(await _tradeService.GetTradeLimitsAsync(fundId, ticker));
     }
 
     /// <summary>Dispara o batch automatico depois de uma mudanca em trades.</summary>
