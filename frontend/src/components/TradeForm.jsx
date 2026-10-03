@@ -24,14 +24,15 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   const [priceLoading, setPriceLoading] = useState(false);
   const [bonds, setBonds] = useState(null);
   const [bondsError, setBondsError] = useState(null);
-  // Base do limite de venda a descoberto (100% do patrimonio), buscada quando o lado e SHORT
+  // Caixa do fundo e base do limite de venda a descoberto (100% do patrimonio) para o ativo escolhido
   const [shortLimit, setShortLimit] = useState(null);
   const [limitsVersion, setLimitsVersion] = useState(0);
   const isLeader = currentUser?.role === 'leader';
   const isTesouro = mode === 'tesouro';
   const defaultFundId = activeFund || funds[0]?.id || '';
   const tradeFundId = isLeader ? form.fundId : defaultFundId;
-  const pricedTicker = quote?.ticker;
+  // Ativo para a conta dos limites: o titulo escolhido no Tesouro ou o ticker com preco carregado
+  const limitTicker = isTesouro ? form.ticker : quote?.ticker;
 
   useEffect(() => {
     if (!isLeader) return;
@@ -39,14 +40,14 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
   }, [defaultFundId, isLeader]);
 
   useEffect(() => {
-    if (isTesouro || form.side !== 'short' || !tradeFundId || !pricedTicker) {
+    if (!tradeFundId || !limitTicker) {
       setShortLimit(null);
       return;
     }
-    get(`/trades/limits/${tradeFundId}?ticker=${encodeURIComponent(pricedTicker)}`)
+    get(`/trades/limits/${tradeFundId}?ticker=${encodeURIComponent(limitTicker)}`)
       .then(setShortLimit)
       .catch(() => setShortLimit(null));
-  }, [isTesouro, form.side, tradeFundId, pricedTicker, limitsVersion]);
+  }, [tradeFundId, limitTicker, limitsVersion]);
 
   useEffect(() => {
     if (!isTesouro || bonds) return;
@@ -187,15 +188,29 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
     const shortBefore = shortLimit.otherShortExposure + Math.max(0, -held) * unitPrice;
     shortAvailable = Math.max(0, limit - shortBefore) + Math.max(0, held) * unitPrice;
   }
+  // Compra: limitada pelo caixa do fundo (mesma trava do servidor, que recusa caixa insuficiente)
+  const cashAvailable = shortLimit && form.side === 'long' ? Math.max(0, shortLimit.cash) : null;
   const orderValue = (byValue ? estimatedQty : quantity) * (unitPrice || 0);
   const overShortLimit = shortAvailable != null && orderValue > shortAvailable + 0.005;
-  const limitItem = shortAvailable != null && !overShortLimit
-    ? { label: 'Disponivel p/ vender', value: fmtBRL(shortAvailable), color: COLORS.leftover }
-    : null;
-  // Valor abaixo da menor quantidade negociavel ou acima do limite de venda: aviso amarelo e botao bloqueado
-  const blocked = (byValue && amountValue > 0 && unitPrice > 0 && estimatedQty < quantityStep) || overShortLimit;
+  const overCash = cashAvailable != null && unitPrice > 0 && orderValue > cashAvailable + 0.005;
+  let limitItem = null;
+  if (shortAvailable != null && !overShortLimit) {
+    limitItem = { label: 'Disponivel p/ vender', value: fmtBRL(shortAvailable), color: COLORS.leftover };
+  } else if (cashAvailable != null && !overCash) {
+    limitItem = { label: 'Caixa disponivel', value: fmtBRL(cashAvailable), color: COLORS.leftover };
+  }
+  // Valor abaixo da menor quantidade negociavel, acima do limite de venda ou sem caixa: aviso amarelo e botao bloqueado
+  const belowMinimum = byValue && amountValue > 0 && unitPrice > 0 && estimatedQty < quantityStep;
+  const blocked = belowMinimum || overShortLimit || overCash;
   let preview = null;
-  if (overShortLimit && !(byValue && estimatedQty < quantityStep)) {
+  if (overCash && !belowMinimum) {
+    preview = (
+      <EstimateWarning>
+        Caixa insuficiente: {isTesouro ? 'o custo' : 'a compra'} de {fmtBRL(orderValue)} passa do caixa disponivel
+        {' '}({fmtBRL(cashAvailable)})
+      </EstimateWarning>
+    );
+  } else if (overShortLimit && !belowMinimum) {
     preview = (
       <EstimateWarning>
         Acima do limite de venda a descoberto: disponivel para vender {fmtBRL(shortAvailable)}
