@@ -15,6 +15,7 @@ public class BatchService
     private readonly TreasuryService _treasury;
     private readonly DividendService _dividends;
     private readonly NavBackfillService _backfill;
+    private readonly FundOrderService _fundOrders;
     private readonly ILogger<BatchService> _logger;
 
     public BatchService(
@@ -26,6 +27,7 @@ public class BatchService
         TreasuryService treasury,
         DividendService dividends,
         NavBackfillService backfill,
+        FundOrderService fundOrders,
         ILogger<BatchService> logger)
     {
         _pricing = pricing;
@@ -36,6 +38,7 @@ public class BatchService
         _treasury = treasury;
         _dividends = dividends;
         _backfill = backfill;
+        _fundOrders = fundOrders;
         _logger = logger;
     }
 
@@ -59,7 +62,7 @@ public class BatchService
         try
         {
             // 1. Tesouro Direto: catalogo de titulos, cupons e resgates (antes dos precos e do NAV)
-            _logger.LogInformation("Etapa 1/7: Tesouro Direto (catalogo, cupons e vencimentos)...");
+            _logger.LogInformation("Etapa 1/8: Tesouro Direto (catalogo, cupons e vencimentos)...");
             try
             {
                 await _treasury.SyncCatalogAsync();
@@ -74,7 +77,7 @@ public class BatchService
             }
 
             // 2. Proventos de acoes (dividendos/JCP) na data ex, antes do NAV: o caixa recebe o que o preco perdeu
-            _logger.LogInformation("Etapa 2/7: Proventos de acoes (dividendos e JCP)...");
+            _logger.LogInformation("Etapa 2/8: Proventos de acoes (dividendos e JCP)...");
             try
             {
                 var dividends = await _dividends.ProcessDueDividendsAsync();
@@ -87,17 +90,31 @@ public class BatchService
                 _logger.LogError(ex, "Etapa de proventos falhou");
             }
 
-            // 3. Precos
-            _logger.LogInformation("Etapa 3/7: Buscando precos...");
+            // 3. Ordens de fundos: aplicacoes/resgates cuja cota a CVM ja publicou viram trades (antes dos precos e do NAV)
+            _logger.LogInformation("Etapa 3/8: Ordens de fundos (cotizacao)...");
+            try
+            {
+                var executed = await _fundOrders.ProcessPendingAsync();
+                if (executed > 0)
+                    _logger.LogInformation("Ordens de fundos: {Count} aplicacao(oes)/resgate(s) executado(s)", executed);
+            }
+            catch (Exception ex)
+            {
+                // Ordens continuam pendentes e sao tentadas no proximo batch
+                _logger.LogError(ex, "Etapa de ordens de fundos falhou");
+            }
+
+            // 4. Precos
+            _logger.LogInformation("Etapa 4/8: Buscando precos...");
             var priceCount = await _pricing.FetchAndStorePricesAsync();
 
-            // 4. CDI e IBOVESPA (benchmarks das metricas e calendario de dias uteis)
-            _logger.LogInformation("Etapa 4/7: Atualizando CDI e IBOVESPA...");
+            // 5. CDI e IBOVESPA (benchmarks das metricas e calendario de dias uteis)
+            _logger.LogInformation("Etapa 5/8: Atualizando CDI e IBOVESPA...");
             await _cdi.FetchAndStoreCdiAsync();
             await _ibovespa.FetchAndStoreAsync();
 
-            // 5. Dias uteis passados sem NAV (batch que nao rodou): preenchidos com fechamentos historicos
-            _logger.LogInformation("Etapa 5/7: Preenchendo dias sem NAV...");
+            // 6. Dias uteis passados sem NAV (batch que nao rodou): preenchidos com fechamentos historicos
+            _logger.LogInformation("Etapa 6/8: Preenchendo dias sem NAV...");
             try
             {
                 var filled = await _backfill.FillMissingDaysAsync();
@@ -113,12 +130,12 @@ public class BatchService
             await TradeService.PortfolioLock.WaitAsync();
             try
             {
-                // 6. NAV de hoje
-                _logger.LogInformation("Etapa 6/7: Recalculando NAV...");
+                // 7. NAV de hoje
+                _logger.LogInformation("Etapa 7/8: Recalculando NAV...");
                 await _nav.CalculateAllAsync();
 
-                // 7. Metricas
-                _logger.LogInformation("Etapa 7/7: Calculando metricas...");
+                // 8. Metricas
+                _logger.LogInformation("Etapa 8/8: Calculando metricas...");
                 await _metrics.CalculateAllAsync();
             }
             finally

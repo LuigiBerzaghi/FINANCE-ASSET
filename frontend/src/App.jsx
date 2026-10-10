@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { clearAuthToken, download, get, getAuthToken, post } from './lib/api';
-import { fmtBRL, fmtPct, fmtNum } from './lib/format';
+import { fmtBRL, fmtPct, fmtNum, isFundTicker } from './lib/format';
 import { useTheme } from './lib/useTheme';
 import Section from './components/Section';
 import Stat from './components/Stat';
@@ -19,6 +19,7 @@ import BenchmarkChart from './components/BenchmarkChart';
 import ReturnByClass from './components/ReturnByClass';
 import LoginForm from './components/LoginForm';
 import FundMembers from './components/FundMembers';
+import FundOrdersTable from './components/FundOrdersTable';
 
 export default function App() {
   const { theme, toggle: toggleTheme } = useTheme();
@@ -37,6 +38,7 @@ export default function App() {
   const [benchmarkData, setBenchmarkData] = useState(null);
   const [returnByClass, setReturnByClass] = useState([]);
   const [fundMembers, setFundMembers] = useState(null);
+  const [fundOrders, setFundOrders] = useState([]);
 
   const loadFunds = useCallback(async () => {
     try {
@@ -54,7 +56,7 @@ export default function App() {
     if (!activeFund) return;
     if (authUser?.role === 'leader') setFundMembers(null);
     try {
-      const [pos, nav, trd, met, exp, bench, rbc, members] = await Promise.all([
+      const [pos, nav, trd, met, exp, bench, rbc, members, orders] = await Promise.all([
         get(`/funds/${activeFund}/positions`),
         get(`/funds/${activeFund}/nav`),
         get(`/trades/fund/${activeFund}`),
@@ -65,6 +67,7 @@ export default function App() {
         authUser?.role === 'leader'
           ? get(`/funds/${activeFund}/members`).catch(() => null)
           : Promise.resolve(null),
+        get(`/fund-orders/fund/${activeFund}`).catch(() => []),
       ]);
       setPositions(pos);
       setNavData(nav);
@@ -74,6 +77,7 @@ export default function App() {
       setBenchmarkData(bench);
       setReturnByClass(rbc);
       setFundMembers(members);
+      setFundOrders(orders);
     } catch (e) {
       console.error('Erro ao carregar dados do fundo:', e);
     }
@@ -155,6 +159,7 @@ export default function App() {
     setFunds([]);
     setActiveFund(null);
     setFundMembers(null);
+    setFundOrders([]);
     setView('dashboard');
   };
 
@@ -181,10 +186,14 @@ export default function App() {
   const isLeader = authUser.role === 'leader';
   const currentFund = funds.find((f) => f.id === activeFund);
 
+  // Cota de fundo aparece pelo nome (encurtado), nao pelo CNPJ
+  const allocationLabel = (p) => (
+    isFundTicker(p.ticker) && p.name ? (p.name.length > 14 ? `${p.name.slice(0, 13)}…` : p.name) : p.ticker
+  );
   const allocationData = positions
     .filter((p) => p.weight != null && Math.abs(p.weight) > 0)
     .map((p) => ({
-      name: p.side === 'short' ? `${p.ticker} Short` : p.ticker,
+      name: p.side === 'short' ? `${allocationLabel(p)} Short` : allocationLabel(p),
       value: Math.abs(p.weight * 100),
     }))
     .sort((a, b) => b.value - a.value);
@@ -308,7 +317,8 @@ export default function App() {
                 color={currentFund.shareValue >= 1 ? 'var(--green)' : 'var(--red)'} />
               <Stat label="Retorno Atual" value={fmtPct(currentFund.dailyReturn)}
                 color={currentFund.dailyReturn >= 0 ? 'var(--green)' : 'var(--red)'} />
-              <Stat label="Caixa" value={fmtBRL(currentFund.cashBalance)} />
+              <Stat label="Caixa" value={fmtBRL(currentFund.cashBalance)}
+                sub={currentFund.reservedCash > 0 ? `${fmtBRL(currentFund.reservedCash)} reservado p/ aplicacoes em fundos` : null} />
               <Stat label="Posicoes" value={currentFund.positionCount} color="var(--accent)" />
             </div>
 
@@ -338,6 +348,12 @@ export default function App() {
                 <MetricsPanel metrics={metrics} />
               </Section>
             </div>
+
+            {fundOrders.length > 0 && (
+              <Section title="Ordens de Fundos (aplicacoes e resgates)">
+                <FundOrdersTable orders={fundOrders} onChange={() => { loadFunds(); loadFundData(); }} />
+              </Section>
+            )}
 
             {allocationData.length > 0 && (
               <Section title="Alocacao">
@@ -374,6 +390,11 @@ export default function App() {
             <Section title="Executar Trade">
               <TradeForm funds={funds} activeFund={activeFund} currentUser={authUser} onSubmit={() => { loadFunds(); loadFundData(); }} />
             </Section>
+            {fundOrders.length > 0 && (
+              <Section title="Ordens de Fundos (aplicacoes e resgates)">
+                <FundOrdersTable orders={fundOrders} onChange={() => { loadFunds(); loadFundData(); }} />
+              </Section>
+            )}
             <Section title="Trades Recentes">
               <TradesTable trades={trades} canDelete={isLeader} onDelete={() => { loadFunds(); loadFundData(); }} />
             </Section>
@@ -440,7 +461,7 @@ export default function App() {
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
           <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>PUC Finance — Celula de Asset Management</span>
-          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>Precos: Yahoo Finance (delay 15min)</span>
+          <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>Precos: Yahoo Finance (delay 15min) | Cotas de fundos: CVM (~2 dias uteis)</span>
         </div>
       </div>
     </div>

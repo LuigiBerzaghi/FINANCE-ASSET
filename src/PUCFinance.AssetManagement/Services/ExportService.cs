@@ -26,6 +26,7 @@ public class ExportService
         var posHistory = await _db.PositionHistory.Where(h => h.FundId == fundId).OrderBy(h => h.Date).ThenBy(h => h.Ticker).ToListAsync();
         var realized = await _db.RealizedPnl.Where(r => r.FundId == fundId).ToListAsync();
         var treasuryEvents = await _db.TreasuryEvents.Where(e => e.FundId == fundId).OrderBy(e => e.EventDate).ThenBy(e => e.Ticker).ToListAsync();
+        var fundOrders = await _db.FundOrders.Where(o => o.FundId == fundId).OrderByDescending(o => o.CreatedAt).ThenByDescending(o => o.Id).ToListAsync();
         var cash = await _db.Cash.FindAsync(fundId);
         var latestNav = navHistory.LastOrDefault();
 
@@ -225,6 +226,44 @@ public class ExportService
                 wsEvents.Cell(i + 2, 6).Value = e.Total;
             }
             wsEvents.Columns().AdjustToContents();
+        }
+
+        // ── Ordens de fundos (aplicacoes e resgates pela cota do dia) ──
+        if (fundOrders.Count > 0)
+        {
+            var wsOrders = wb.AddWorksheet("Ordens de Fundos");
+            var orderHeaders = new[] { "Data da Ordem", "Fundo", "Operacao", "Valor", "Quantidade", "Cota de", "Status", "Cota Usada", "Data da Cota Usada", "Tese", "Gestor", "Observacao" };
+            for (int i = 0; i < orderHeaders.Length; i++)
+            {
+                wsOrders.Cell(1, i + 1).Value = orderHeaders[i];
+                wsOrders.Cell(1, i + 1).Style.Font.Bold = true;
+            }
+            for (int i = 0; i < fundOrders.Count; i++)
+            {
+                var o = fundOrders[i];
+                wsOrders.Cell(i + 2, 1).Value = o.CreatedAt;
+                wsOrders.Cell(i + 2, 2).Value = o.Ticker;
+                wsOrders.Cell(i + 2, 3).Value = o.Side == "long" ? "Aplicacao" : (o.RedeemAll == 1 ? "Resgate total" : "Resgate");
+                if (o.Amount.HasValue)
+                    wsOrders.Cell(i + 2, 4).Value = o.Amount.Value;
+                if (o.Quantity.HasValue)
+                    wsOrders.Cell(i + 2, 5).Value = o.Quantity.Value;
+                wsOrders.Cell(i + 2, 6).Value = o.QuoteDate;
+                wsOrders.Cell(i + 2, 7).Value = o.Status switch
+                {
+                    FundOrderStatus.Pending => "Pendente",
+                    FundOrderStatus.Executed => "Executada",
+                    FundOrderStatus.Cancelled => "Cancelada",
+                    _ => "Recusada"
+                };
+                if (o.Price.HasValue)
+                    wsOrders.Cell(i + 2, 8).Value = o.Price.Value;
+                wsOrders.Cell(i + 2, 9).Value = o.PriceDate ?? "";
+                wsOrders.Cell(i + 2, 10).Value = o.Thesis ?? "";
+                wsOrders.Cell(i + 2, 11).Value = o.CreatedBy ?? "";
+                wsOrders.Cell(i + 2, 12).Value = o.Message ?? "";
+            }
+            wsOrders.Columns().AdjustToContents();
         }
 
         using var ms = new MemoryStream();

@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { post, get } from '../lib/api';
 import { fmtBRL, fmtMoney, fmtQty, fmtRate, parseDecimal, quantityForAmount } from '../lib/format';
 import { COLORS, EstimateLine, EstimateNote, EstimateWarning, sideColor } from './Estimate';
+import FundOrderForm from './FundOrderForm';
 
 const MODES = [
   { key: 'market', label: 'Acoes, ETFs e outros' },
   { key: 'tesouro', label: 'Tesouro Direto' },
+  { key: 'fundos', label: 'Fundos (CVM)' },
 ];
 
 export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) {
@@ -198,8 +200,9 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
     const room = Math.max(limit - limits.otherGrossExposure, Math.abs(held) * unitPrice);
     grossAvailable = Math.max(0, room - (form.side === 'long' ? 1 : -1) * held * unitPrice);
   }
-  // Compra: limitada pelo caixa do fundo (mesma trava do servidor, que recusa caixa insuficiente)
-  const cashAvailable = limits && form.side === 'long' ? Math.max(0, limits.cash) : null;
+  // Compra: limitada pelo caixa do fundo, sem o valor reservado para aplicacoes em fundos pendentes
+  // (mesma trava do servidor, que recusa caixa insuficiente)
+  const cashAvailable = limits && form.side === 'long' ? Math.max(0, limits.cash - (limits.reservedCash || 0)) : null;
   const orderValue = (byValue ? estimatedQty : quantity) * (unitPrice || 0);
   // O limite que pesa mais neste sentido define o disponivel e o aviso
   const sideLimit = form.side === 'long' ? cashAvailable : shortAvailable;
@@ -229,7 +232,7 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
     preview = (
       <EstimateWarning>
         Caixa insuficiente: {isTesouro ? 'o custo' : 'a compra'} de {fmtBRL(orderValue)} passa do caixa disponivel
-        {' '}({fmtBRL(cashAvailable)})
+        {' '}({fmtBRL(cashAvailable)}{limits.reservedCash > 0 ? `; ${fmtBRL(limits.reservedCash)} reservado para aplicacoes em fundos` : ''})
       </EstimateWarning>
     );
   } else if (overShortLimit && !belowMinimum) {
@@ -271,20 +274,34 @@ export default function TradeForm({ funds, activeFund, currentUser, onSubmit }) 
     preview = <EstimateLine items={[limitItem]} />;
   }
 
+  const modeButtons = (
+    <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+      {MODES.map((m) => (
+        <button key={m.key} onClick={() => switchMode(m.key)}
+          style={{
+            padding: '6px 14px', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+            border: `1px solid ${mode === m.key ? 'var(--accent)' : 'var(--border)'}`,
+            background: mode === m.key ? 'var(--accent-dim)' : 'transparent',
+            color: mode === m.key ? 'var(--accent)' : 'var(--text-muted)',
+            fontWeight: mode === m.key ? 600 : 400,
+          }}>{m.label}</button>
+      ))}
+    </div>
+  );
+
+  // Cotas de fundos: aplicacao/resgate por ordem, executada pela cota do dia quando a CVM publicar
+  if (mode === 'fundos') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {modeButtons}
+        <FundOrderForm funds={funds} activeFund={activeFund} currentUser={currentUser} onSubmit={onSubmit} />
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
-      <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-        {MODES.map((m) => (
-          <button key={m.key} onClick={() => switchMode(m.key)}
-            style={{
-              padding: '6px 14px', borderRadius: 4, cursor: 'pointer', fontSize: 12,
-              border: `1px solid ${mode === m.key ? 'var(--accent)' : 'var(--border)'}`,
-              background: mode === m.key ? 'var(--accent-dim)' : 'transparent',
-              color: mode === m.key ? 'var(--accent)' : 'var(--text-muted)',
-              fontWeight: mode === m.key ? 600 : 400,
-            }}>{m.label}</button>
-        ))}
-      </div>
+      {modeButtons}
       {isLeader && (
         <div>
           <label style={labelStyle}>Fundo</label>

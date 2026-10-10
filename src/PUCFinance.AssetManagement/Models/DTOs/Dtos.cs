@@ -75,6 +75,20 @@ public record ClosePositionRequest(
     double? Amount = null  // ou quanto fechar em BRL (no lugar da quantidade)
 );
 
+/// <summary>
+/// Ordem de aplicacao (long, por valor) ou resgate (short: por valor, por quantidade de cotas ou total)
+/// em cota de fundo. Executada pela cota do dia da ordem quando a CVM publicar (ver FundOrderService).
+/// </summary>
+public record CreateFundOrderRequest(
+    int FundId,
+    string Ticker,          // FI- + CNPJ (+ subclasse), da busca de fundos
+    string Side,            // "long" = aplicacao, "short" = resgate
+    double? Amount = null,  // aplicacao ou resgate por valor (BRL)
+    double? Quantity = null,  // resgate por quantidade de cotas
+    bool RedeemAll = false, // resgate total
+    string? Thesis = null   // justificativa (obrigatoria no resgate)
+);
+
 // ── Responses ─────────────────────────────────────────
 
 /// <summary>Base para a tela calcular os limites de venda a descoberto e de exposicao bruta de um ativo (ver TradeService.GetTradeLimitsAsync).</summary>
@@ -85,7 +99,57 @@ public record TradeLimitsResponse(
     double OtherShortExposure,    // soma (positiva) das demais posicoes vendidas
     double HeldQuantity,          // quantidade do ativo no fundo (vendido negativo)
     double MaxGrossExposure,      // comprado + vendido, fracao do patrimonio (2 = 200%)
-    double OtherGrossExposure     // soma em modulo das demais posicoes (comprado + vendido)
+    double OtherGrossExposure,    // soma em modulo das demais posicoes (comprado + vendido) e das aplicacoes pendentes
+    double ReservedCash = 0       // caixa reservado para aplicacoes em fundos pendentes (nao pode ser usado em compras)
+);
+
+/// <summary>Fundo aberto a aplicacoes (cadastro da CVM) com a ultima cota publicada.</summary>
+public record FundSearchResultResponse(
+    string Ticker,
+    string Cnpj,
+    string? Subclass,
+    string Name,
+    string? Classification,   // Renda Fixa, Multimercado, Acoes, Cambial
+    string? AnbimaClass,
+    bool IsFic,               // classe de cotas (investe em outros fundos)
+    string? TargetAudience,   // Publico Geral, Qualificado, Profissional
+    double LastQuota,
+    string LastQuotaDate,
+    double? Equity            // patrimonio liquido na ultima cota
+);
+
+/// <summary>Dados do fundo para a boleta: ultima cota e em que cota entra uma ordem dada agora.</summary>
+public record FundOrderInfoResponse(
+    FundSearchResultResponse Fund,
+    bool AcceptsApplications, // aberto a aplicacoes no cadastro da CVM (resgate vale mesmo se nao)
+    string NextQuoteDate,     // cota de uma ordem dada agora (dia util ate o corte; senao, o proximo)
+    int CutoffHour,           // horario de corte, Brasilia
+    string CancelUntil,       // ate quando o gestor pode cancelar (ISO 8601 com fuso)
+    double QuantityStep
+);
+
+public record FundOrderResponse(
+    int Id,
+    int FundId,
+    string Ticker,
+    string? Name,
+    string Side,              // long = aplicacao, short = resgate
+    double? Amount,
+    double? Quantity,
+    bool RedeemAll,
+    string QuoteDate,         // cota da ordem (yyyy-MM-dd)
+    string CancelUntil,       // prazo de cancelamento do gestor (ISO 8601 com fuso)
+    bool CanCancel,           // o usuario atual pode cancelar agora
+    string Status,            // pending, executed, cancelled, rejected
+    string? Thesis,
+    string? CreatedBy,
+    string CreatedAt,
+    string? ResolvedAt,
+    double? Price,            // cota usada na execucao
+    string? PriceDate,
+    int? TradeId,
+    double? ExecutedQuantity, // cotas do trade gerado
+    string? Message
 );
 
 public record FundSummaryResponse(
@@ -99,7 +163,8 @@ public record FundSummaryResponse(
     double DailyReturn,
     double CashBalance,
     int PositionCount,
-    string Benchmark
+    string Benchmark,
+    double ReservedCash = 0  // caixa reservado para aplicacoes em fundos pendentes
 );
 
 public record PositionResponse(
@@ -110,7 +175,8 @@ public record PositionResponse(
     double? CurrentPrice,
     double? MarketValue,
     double? UnrealizedPnl,
-    double? Weight           // % do patrimônio
+    double? Weight,          // % do patrimônio
+    string? Name = null      // nome do ativo no catalogo (ex.: fundo da CVM)
 );
 
 public record NavPointResponse(
@@ -130,7 +196,8 @@ public record TradeResponse(
     string ExecutedAt,
     string? ExecutedBy,
     string Currency,        // moeda de cotacao do ativo
-    double? FxRate          // BRL por unidade da moeda
+    double? FxRate,         // BRL por unidade da moeda
+    string? Name = null     // nome do ativo no catalogo (ex.: fundo da CVM)
 );
 
 public record MetricsResponse(

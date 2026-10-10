@@ -37,6 +37,14 @@ public class FundsController : ControllerBase
             .ToListAsync();
         var summaries = new List<FundSummaryResponse>();
 
+        // Caixa reservado para aplicacoes em fundos ainda nao cotizadas
+        var fundIds = funds.Select(f => f.Id).ToList();
+        var reserved = await _db.FundOrders
+            .Where(o => fundIds.Contains(o.FundId) && o.Status == FundOrderStatus.Pending && o.Side == "long")
+            .GroupBy(o => o.FundId)
+            .Select(g => new { FundId = g.Key, Amount = g.Sum(o => o.Amount) })
+            .ToDictionaryAsync(x => x.FundId, x => x.Amount ?? 0);
+
         foreach (var fund in funds)
         {
             var snapshot = await GetRealtimeSnapshotAsync(fund.Id, fund);
@@ -52,7 +60,8 @@ public class FundsController : ControllerBase
                 DailyReturn: snapshot.DailyReturn,
                 CashBalance: snapshot.CashBalance,
                 PositionCount: snapshot.Positions.Count,
-                Benchmark: FundBenchmarks.Resolve(fund.Benchmark)
+                Benchmark: FundBenchmarks.Resolve(fund.Benchmark),
+                ReservedCash: reserved.GetValueOrDefault(fund.Id)
             ));
         }
 
@@ -244,6 +253,10 @@ public class FundsController : ControllerBase
         if (fund == null) return NotFound();
 
         var snapshot = await GetRealtimeSnapshotAsync(id, fund);
+        var tickers = snapshot.Positions.Select(p => p.Ticker).ToList();
+        var names = await _db.Assets
+            .Where(a => tickers.Contains(a.Ticker))
+            .ToDictionaryAsync(a => a.Ticker, a => a.Name);
 
         var result = snapshot.Positions.Select(p => new PositionResponse(
             Ticker: p.Ticker,
@@ -253,7 +266,8 @@ public class FundsController : ControllerBase
             CurrentPrice: p.CurrentPrice,
             MarketValue: CurrentMarketValue(p),
             UnrealizedPnl: CurrentUnrealizedPnl(p),
-            Weight: snapshot.TotalEquity > 0 ? CurrentMarketValue(p) / snapshot.TotalEquity : null
+            Weight: snapshot.TotalEquity > 0 ? CurrentMarketValue(p) / snapshot.TotalEquity : null,
+            Name: names.GetValueOrDefault(p.Ticker)
         )).ToList();
 
         return Ok(result);
@@ -451,7 +465,7 @@ public class FundsController : ControllerBase
         {
             {"equity_br", "Acoes BR"}, {"equity_us", "Acoes EUA"}, {"etf", "ETFs"},
             {"fx", "Cambio"}, {"commodity", "Commodities"}, {"crypto", "Cripto"},
-            {"fixed_income", "Renda Fixa"}, {"unknown", "Outros"}
+            {"fixed_income", "Renda Fixa"}, {FundQuotas.AssetClass, "Fundos"}, {"unknown", "Outros"}
         };
 
         foreach (var pos in positions)
@@ -509,7 +523,7 @@ public class FundsController : ControllerBase
         {
             {"equity_br", "Acoes BR"}, {"equity_us", "Acoes EUA"}, {"etf", "ETFs"},
             {"fx", "Cambio"}, {"commodity", "Commodities"}, {"crypto", "Cripto"},
-            {"fixed_income", "Renda Fixa"}, {"unknown", "Outros"}
+            {"fixed_income", "Renda Fixa"}, {FundQuotas.AssetClass, "Fundos"}, {"unknown", "Outros"}
         };
 
         // Calcula para cada periodo
@@ -938,7 +952,8 @@ public class TradesController : ControllerBase
             .OrderByDescending(t => t.ExecutedAt)
             .Select(t => new TradeResponse(
                 t.Id, t.Ticker, t.Side, t.Quantity, t.Price,
-                t.Thesis, t.ExecutedAt, t.ExecutedBy, t.Currency, t.FxRate))
+                t.Thesis, t.ExecutedAt, t.ExecutedBy, t.Currency, t.FxRate,
+                _db.Assets.Where(a => a.Ticker == t.Ticker).Select(a => a.Name).FirstOrDefault()))
             .ToListAsync();
 
         return Ok(trades);
@@ -998,11 +1013,13 @@ public class PricesController : ControllerBase
 {
     private readonly PricingService _pricing;
     private readonly TesouroDiretoClient _tesouro;
+    private readonly CvmFundsClient _cvm;
 
-    public PricesController(PricingService pricing, TesouroDiretoClient tesouro)
+    public PricesController(PricingService pricing, TesouroDiretoClient tesouro, CvmFundsClient cvm)
     {
         _pricing = pricing;
         _tesouro = tesouro;
+        _cvm = cvm;
     }
 
     /// <summary>GET /api/prices/current/{ticker} — Preco atual em BRL e na moeda original</summary>
@@ -1031,6 +1048,26 @@ public class PricesController : ControllerBase
                 sellRate = bond.SellRate,
                 baseDate = bond.BaseDate,
                 quantityStep = TesouroDireto.QuantityStep
+            });
+        }
+
+        // Cota de fundo: ultima cota publicada pela CVM (aplicacoes e resgates valem pela cota do dia da ordem)
+        if (FundQuotas.IsFundTicker(ticker))
+        {
+            var fundTicker = ticker.Trim().ToUpperInvariant();
+            var fundQuote = await _cvm.GetLatestQuoteAsync(fundTicker);
+            if (fundQuote == null)
+                return NotFound(new { error = $"Sem cota recente publicada pela CVM para {fundTicker}" });
+
+            return Ok(new
+            {
+                ticker = fundTicker,
+                price = fundQuote.Quota,
+                nativePrice = fundQuote.Quota,
+                currency = PricingService.BaseCurrency,
+                fxRate = 1.0,
+                baseDate = fundQuote.Date,
+                quantityStep = FundQuotas.QuantityStep
             });
         }
 
@@ -1085,4 +1122,167 @@ public class TreasuryController : ControllerBase
             SellPrice: q.SellPrice,
             CanBuy: q.CanBuy)).ToList());
     }
+}
+
+// ════════════════════════════════════════════════════════
+// COTAS DE FUNDOS (aplicacao e resgate por ordem, dados da CVM)
+// ════════════════════════════════════════════════════════
+
+[ApiController]
+[Authorize]
+[Route("api/fund-orders")]
+public class FundOrdersController : ControllerBase
+{
+    private readonly FundOrderService _orders;
+    private readonly CvmFundsClient _cvm;
+    private readonly AppDbContext _db;
+    private readonly FundAccessService _fundAccess;
+    private readonly CurrentUserService _currentUser;
+
+    public FundOrdersController(
+        FundOrderService orders,
+        CvmFundsClient cvm,
+        AppDbContext db,
+        FundAccessService fundAccess,
+        CurrentUserService currentUser)
+    {
+        _orders = orders;
+        _cvm = cvm;
+        _db = db;
+        _fundAccess = fundAccess;
+        _currentUser = currentUser;
+    }
+
+    /// <summary>GET /api/fund-orders/search?q= — Fundos abertos a aplicacao (cadastro da CVM) por nome ou CNPJ, com a ultima cota</summary>
+    [HttpGet("search")]
+    public async Task<ActionResult<List<FundSearchResultResponse>>> Search([FromQuery] string? q)
+    {
+        var query = q?.Trim() ?? string.Empty;
+        if (query.Length < 3)
+            return Ok(new List<FundSearchResultResponse>());
+        if (query.Length > 100)
+            query = query[..100];
+
+        var matches = await _cvm.SearchAsync(query, 30);
+        if (matches == null)
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { error = "Dados de fundos da CVM indisponiveis no momento. Tente novamente em instantes." });
+
+        return Ok(matches.Select(m => ToResponse(m.Fund, m.LastQuote, m.Equity)).ToList());
+    }
+
+    /// <summary>GET /api/fund-orders/info/{ticker} — Ultima cota do fundo e em que cota entra uma ordem dada agora</summary>
+    [HttpGet("info/{ticker}")]
+    public async Task<ActionResult<FundOrderInfoResponse>> Info(string ticker)
+    {
+        ticker = ticker.Trim().ToUpperInvariant();
+        if (!FundQuotas.IsFundTicker(ticker))
+            return NotFound(new { error = "Fundo nao encontrado" });
+
+        CvmFund? fund;
+        try
+        {
+            fund = await _cvm.GetFundAsync(ticker);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = ex.Message });
+        }
+
+        var quote = await _cvm.GetLatestQuoteAsync(ticker);
+        if (quote == null && await _cvm.GetLatestDataDateAsync() == null)
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { error = "Cotas da CVM indisponiveis no momento. Tente novamente em instantes." });
+        if (quote == null)
+            return NotFound(new { error = $"Sem cota recente publicada pela CVM para {ticker}" });
+
+        // Fundo que deixou de aceitar aplicacoes (encerrado, fechado...) ainda pode ser resgatado: usa o catalogo
+        var acceptsApplications = fund != null;
+        if (fund == null)
+        {
+            var asset = await _db.Assets.AsNoTracking().FirstOrDefaultAsync(a => a.Ticker == ticker);
+            var parsed = FundQuotas.ParseTicker(ticker)!.Value;
+            if (asset == null)
+                return NotFound(new { error = $"{ticker} nao aceita aplicacoes (fora do cadastro da CVM, encerrado, exclusivo ou fechado)" });
+
+            fund = new CvmFund(ticker, FundQuotas.FormatCnpj(parsed.Cnpj), parsed.Subclass, asset.Name ?? ticker,
+                asset.Sector, null, false, null);
+        }
+
+        var quoteDate = BrazilTime.ToIsoDate(FundQuotas.QuoteDateFor(DateTimeOffset.UtcNow));
+        return Ok(new FundOrderInfoResponse(
+            ToResponse(fund, quote, null),
+            acceptsApplications,
+            quoteDate,
+            FundQuotas.CutoffHour,
+            FundQuotas.CancelDeadline(quoteDate).ToString("yyyy-MM-dd'T'HH:mm:sszzz", System.Globalization.CultureInfo.InvariantCulture),
+            FundQuotas.QuantityStep));
+    }
+
+    /// <summary>GET /api/fund-orders/fund/{fundId} — Ordens do fundo (pendentes primeiro)</summary>
+    [HttpGet("fund/{fundId}")]
+    public async Task<ActionResult<List<FundOrderResponse>>> GetByFund(int fundId)
+    {
+        if (!await _fundAccess.CanAccessFundAsync(fundId))
+            return NotFound(new { error = "Fundo nao encontrado" });
+
+        return Ok(await _orders.GetOrdersAsync(fundId, _currentUser.IsLeader));
+    }
+
+    /// <summary>
+    /// POST /api/fund-orders — Ordem de aplicacao (por valor) ou resgate (valor, quantidade ou total). Vale pela
+    /// cota do dia (corte as 14h de Brasilia) e e executada pelo batch quando a CVM publicar essa cota.
+    /// </summary>
+    [HttpPost]
+    public async Task<ActionResult<FundOrderResponse>> Create([FromBody] CreateFundOrderRequest request)
+    {
+        try
+        {
+            if (!await _fundAccess.CanAccessFundAsync(request.FundId))
+                return NotFound(new { error = "Fundo nao encontrado" });
+
+            var order = await _orders.CreateAsync(request, _currentUser.Name);
+            var response = await _orders.ToResponseAsync(order, _currentUser.IsLeader);
+            return CreatedAtAction(nameof(GetByFund), new { fundId = order.FundId }, response);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>POST /api/fund-orders/{id}/cancel — Cancela ordem pendente (gestor: ate o corte do dia da cota; lider: sempre)</summary>
+    [HttpPost("{id}/cancel")]
+    public async Task<ActionResult<FundOrderResponse>> Cancel(int id)
+    {
+        try
+        {
+            var fundId = await _db.FundOrders
+                .Where(o => o.Id == id)
+                .Select(o => (int?)o.FundId)
+                .FirstOrDefaultAsync();
+            if (!fundId.HasValue || !await _fundAccess.CanAccessFundAsync(fundId.Value))
+                return NotFound(new { error = "Ordem nao encontrada" });
+
+            var order = await _orders.CancelAsync(id, _currentUser.Name, _currentUser.IsLeader);
+            return Ok(await _orders.ToResponseAsync(order, _currentUser.IsLeader));
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    private static FundSearchResultResponse ToResponse(CvmFund fund, FundQuote quote, double? equity) => new(
+        fund.Ticker,
+        fund.Cnpj,
+        fund.Subclass,
+        fund.Name,
+        fund.Classification,
+        fund.AnbimaClass,
+        fund.IsFic,
+        fund.TargetAudience,
+        quote.Quota,
+        quote.Date,
+        equity);
 }

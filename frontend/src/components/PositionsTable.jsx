@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { get, post } from '../lib/api';
-import { fmtBRL, fmtPct, fmtQty, parseDecimal, quantityForAmount } from '../lib/format';
-import { COLORS, EstimateLine, EstimateWarning, sideColor } from './Estimate';
+import { fmtBRL, fmtBrasilia, fmtDate, fmtPct, fmtQty, fmtQuota, isFundTicker, parseDecimal, quantityForAmount } from '../lib/format';
+import { COLORS, EstimateLine, EstimateNote, EstimateWarning, sideColor } from './Estimate';
+import { describeOrder } from './FundOrderForm';
 
 const cols = [
   { key: 'ticker', label: 'Ticker', align: 'left' },
@@ -236,6 +237,146 @@ function ClosePanel({ position, fundId, onCancel, onDone }) {
   );
 }
 
+// Resgate de cotas de fundo: vira ordem pela cota do dia (corte as 14h de Brasilia), executada quando a CVM
+// publicar a cota (~2 dias uteis). Total, por quantidade de cotas ou por valor; justificativa obrigatoria.
+function FundRedeemPanel({ position, fundId, onCancel, onDone }) {
+  const held = position.quantity;
+  const [mode, setMode] = useState('all');
+  const [quantity, setQuantity] = useState('');
+  const [amount, setAmount] = useState('');
+  const [thesis, setThesis] = useState('');
+  const [info, setInfo] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    get(`/fund-orders/info/${encodeURIComponent(position.ticker)}`)
+      .then(setInfo)
+      .catch(() => setInfo(null));
+  }, [position.ticker]);
+
+  // Estimativa na ultima cota publicada; o resgate sai pela cota do dia da ordem
+  const quota = info?.fund.lastQuota ?? position.currentPrice;
+  const amountValue = parseDecimal(amount) || 0;
+  const quantityValue = parseDecimal(quantity) || 0;
+  const qty = mode === 'all' ? held : mode === 'quantity' ? quantityValue : (quota > 0 ? amountValue / quota : 0);
+  const heldValue = quota > 0 ? held * quota : null;
+  const overQty = mode === 'quantity' && quantityValue > held + 1e-9;
+  const overValue = mode === 'value' && heldValue != null && amountValue > Math.round(heldValue * 100) / 100 + 0.005;
+  const blocked = overQty || overValue;
+
+  let preview = null;
+  if (overQty) {
+    preview = <EstimateWarning>Quantidade maior que as cotas do fundo ({fmtQty(held)}). Use Total para sair de tudo.</EstimateWarning>;
+  } else if (overValue) {
+    preview = <EstimateWarning>Valor maior que a posicao (vale {fmtBRL(heldValue)} na ultima cota). Use Total para sair de tudo.</EstimateWarning>;
+  } else if (qty > 0 && quota > 0) {
+    preview = (
+      <EstimateLine
+        items={[
+          { label: 'Cotas', value: `${mode === 'value' ? '≈ ' : ''}${fmtQty(qty)}${mode === 'all' ? ' (todas)' : ''}`, color: COLORS.quantity },
+          { label: 'Resgate estimado', value: fmtBRL(qty * quota), color: sideColor('short') },
+        ]}
+        note={info ? `Estimativa na ultima cota publicada (${fmtDate(info.fund.lastQuotaDate)}); o resgate sai pela cota de ${fmtDate(info.nextQuoteDate)}` : undefined}
+      />
+    );
+  }
+
+  const submit = async () => {
+    setError(null);
+    if (blocked) return;
+    const payload = { fundId: parseInt(fundId), ticker: position.ticker, side: 'short', thesis: thesis.trim() };
+    if (mode === 'all') payload.redeemAll = true;
+    else if (mode === 'quantity') {
+      if (!(quantityValue > 0)) return setError('Informe a quantidade de cotas');
+      payload.quantity = quantityValue;
+    } else {
+      if (!(amountValue > 0)) return setError('Informe o valor do resgate');
+      payload.amount = amountValue;
+    }
+    if (!payload.thesis) return setError('Informe a justificativa do resgate');
+
+    setLoading(true);
+    try {
+      const order = await post('/fund-orders', payload);
+      onDone(describeOrder(order));
+    } catch (e) {
+      setError(e.message);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      marginTop: 12, padding: 14, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface-alt)',
+      display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12,
+    }}>
+      <div style={{ gridColumn: '1 / -1', fontSize: 13, color: 'var(--text)' }}>
+        Resgatar cotas de <strong>{position.name || position.ticker}</strong>: o fundo tem {fmtQty(held)} cotas.
+        {' '}O resgate vira uma ordem pela cota de {info ? fmtDate(info.nextQuoteDate) : 'hoje (ate as 14h) ou do proximo dia util'}
+        {' '}e e executado quando a CVM publicar essa cota (cerca de 2 dias uteis).
+      </div>
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 6 }}>
+          <label style={labelStyle}>{mode === 'value' ? 'Valor (R$)' : mode === 'quantity' ? `Cotas (max. ${fmtQty(held)})` : 'Resgate total'}</label>
+          <div style={{ display: 'flex', gap: 2, marginBottom: 4 }}>
+            {[['all', 'Total'], ['quantity', 'Cotas'], ['value', 'R$']].map(([key, label]) => (
+              <button key={key} type="button" disabled={loading}
+                onClick={() => { setMode(key); setError(null); }}
+                style={{
+                  padding: '1px 8px', borderRadius: 3, cursor: 'pointer', fontSize: 10, fontWeight: 600,
+                  border: `1px solid ${mode === key ? 'var(--accent)' : 'var(--border)'}`,
+                  background: mode === key ? 'var(--accent-dim)' : 'transparent',
+                  color: mode === key ? 'var(--accent)' : 'var(--text-muted)',
+                }}>{label}</button>
+            ))}
+          </div>
+        </div>
+        {mode === 'all' ? (
+          <div style={{ ...inputStyle, minHeight: 34, color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>
+            {fmtQty(held)} cotas
+          </div>
+        ) : mode === 'quantity' ? (
+          <input style={inputStyle} type="number" min="0" max={held} step="any" value={quantity}
+            onChange={(e) => { setQuantity(e.target.value); setError(null); }} />
+        ) : (
+          <input style={inputStyle} type="number" min="0" step="any" placeholder="10000,00" value={amount}
+            onChange={(e) => { setAmount(e.target.value); setError(null); }} />
+        )}
+      </div>
+      <div>
+        <label style={labelStyle}>Justificativa (obrigatoria)</label>
+        <input style={inputStyle} placeholder="Por que esta resgatando..." value={thesis}
+          onChange={(e) => { setThesis(e.target.value); setError(null); }} />
+      </div>
+      {preview && <div style={{ gridColumn: '1 / -1' }}>{preview}</div>}
+      {info && (
+        <div style={{ gridColumn: '1 / -1' }}>
+          <EstimateNote>Da para cancelar a ordem ate {fmtBrasilia(info.cancelUntil)}, o horario de corte do dia da cota.</EstimateNote>
+        </div>
+      )}
+      <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button onClick={submit} disabled={loading || blocked}
+          style={{
+            padding: '8px 18px', borderRadius: 4, border: 'none', cursor: loading ? 'wait' : (blocked ? 'not-allowed' : 'pointer'),
+            background: 'var(--accent-solid)', color: '#fff', fontWeight: 700, fontSize: 12,
+            textTransform: 'uppercase', letterSpacing: '0.05em', opacity: loading || blocked ? 0.45 : 1,
+          }}>
+          {loading ? 'Registrando...' : (mode === 'all' ? 'Resgatar tudo' : 'Registrar resgate')}
+        </button>
+        <button onClick={onCancel} disabled={loading}
+          style={{
+            padding: '8px 14px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent',
+            color: 'var(--text-dim)', fontSize: 12, cursor: 'pointer',
+          }}>
+          Cancelar
+        </button>
+        {error && <span style={{ color: 'var(--red)', fontSize: 12 }}>{error}</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function PositionsTable({ positions, fundId, onClosed }) {
   const [closing, setClosing] = useState(null);
   const [message, setMessage] = useState(null);
@@ -292,10 +433,21 @@ export default function PositionsTable({ positions, fundId, onClosed }) {
             >
               {cols.map((c) => {
                 const val = p[c.key];
+                const isFund = isFundTicker(p.ticker);
                 let color = 'var(--text)';
                 if (c.color && val != null) color = val >= 0 ? 'var(--green)' : 'var(--red)';
                 if (c.key === 'side') color = val === 'long' ? 'var(--green)' : 'var(--red)';
-                const display = c.fmt ? c.fmt(val) : val;
+                // Cota de fundo: preco com as casas que a CVM publica e o nome do fundo abaixo do ticker
+                const fmt = isFund && (c.key === 'avgPrice' || c.key === 'currentPrice') ? fmtQuota : c.fmt;
+                let display = fmt ? fmt(val) : val;
+                if (c.key === 'ticker' && isFund && p.name) {
+                  display = (
+                    <>
+                      <div style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name}>{p.name}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{p.ticker}</div>
+                    </>
+                  );
+                }
 
                 return (
                   <td key={c.key} style={{ padding: '10px 12px', textAlign: c.align, color }}>
@@ -335,7 +487,7 @@ export default function PositionsTable({ positions, fundId, onClosed }) {
                       fontWeight: 600,
                     }}
                   >
-                    Fechar
+                    {isFundTicker(p.ticker) ? 'Resgatar' : 'Fechar'}
                   </button>
                 </td>
               )}
@@ -343,7 +495,16 @@ export default function PositionsTable({ positions, fundId, onClosed }) {
           ))}
         </tbody>
       </table>
-      {closing && (
+      {closing && isFundTicker(closing.ticker) && (
+        <FundRedeemPanel
+          key={closing.ticker}
+          position={closing}
+          fundId={fundId}
+          onCancel={() => setClosing(null)}
+          onDone={done}
+        />
+      )}
+      {closing && !isFundTicker(closing.ticker) && (
         <ClosePanel
           key={closing.ticker}
           position={closing}

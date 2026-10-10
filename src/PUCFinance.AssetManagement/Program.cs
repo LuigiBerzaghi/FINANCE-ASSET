@@ -43,6 +43,8 @@ builder.Services.AddScoped<TreasuryIndexService>();
 builder.Services.AddScoped<TreasuryService>();
 builder.Services.AddScoped<DividendService>();
 builder.Services.AddScoped<CurrencyMigrationService>();
+builder.Services.AddSingleton<CvmFundsClient>();
+builder.Services.AddScoped<FundOrderService>();
 builder.Services.AddSingleton<PasswordService>();
 builder.Services.AddSingleton<AuthTokenService>();
 builder.Services.AddHttpContextAccessor();
@@ -51,6 +53,7 @@ builder.Services.AddScoped<FundAccessService>();
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient(YahooChartClient.HttpClientName, YahooChartClient.Configure);
 builder.Services.AddHttpClient(TesouroDiretoClient.HttpClientName, TesouroDiretoClient.Configure);
+builder.Services.AddHttpClient(CvmFundsClient.HttpClientName, CvmFundsClient.Configure);
 
 // API
 builder.Services.AddAuthentication(SimpleBearerAuthenticationHandler.SchemeName)
