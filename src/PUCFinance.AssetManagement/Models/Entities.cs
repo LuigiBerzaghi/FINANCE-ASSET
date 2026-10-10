@@ -215,6 +215,41 @@ public class TreasuryEvent
     public string CreatedAt { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
 }
 
+/// <summary>
+/// Ordem de aplicacao ou resgate em cota de fundo (ticker FI-...). O gestor nao sabe o preco ao dar a ordem:
+/// ela vale pela cota do dia (QuoteDate: dia da ordem ate o horario de corte, senao o proximo dia util) e e
+/// executada pelo batch como um trade normal quando a CVM publica essa cota. Aplicacao pendente reserva o
+/// valor no caixa; resgate nunca passa da posicao.
+/// </summary>
+public class FundOrder
+{
+    public int Id { get; set; }
+    public int FundId { get; set; }
+    public string Ticker { get; set; } = string.Empty;
+    public string Side { get; set; } = "long";       // long = aplicacao, short = resgate
+    public double? Amount { get; set; }              // aplicacao (BRL) ou resgate por valor
+    public double? Quantity { get; set; }            // resgate por quantidade de cotas
+    public int RedeemAll { get; set; }               // 1 = resgate total
+    public string QuoteDate { get; set; } = string.Empty;  // data da cota (cotizacao), yyyy-MM-dd
+    public string Status { get; set; } = FundOrderStatus.Pending;
+    public string? Thesis { get; set; }
+    public string? CreatedBy { get; set; }
+    public string CreatedAt { get; set; } = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+    public string? ResolvedAt { get; set; }          // quando foi executada, cancelada ou recusada
+    public double? Price { get; set; }               // cota usada na execucao (BRL)
+    public string? PriceDate { get; set; }           // data da cota usada (>= QuoteDate)
+    public int? TradeId { get; set; }                // trade gerado na execucao
+    public string? Message { get; set; }             // motivo do cancelamento ou da recusa
+}
+
+public static class FundOrderStatus
+{
+    public const string Pending = "pending";
+    public const string Executed = "executed";
+    public const string Cancelled = "cancelled";
+    public const string Rejected = "rejected";
+}
+
 public static class TreasuryEventKinds
 {
     public const string Coupon = "coupon";

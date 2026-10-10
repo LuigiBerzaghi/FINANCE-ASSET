@@ -88,6 +88,12 @@ public class TradeService
             throw new ArgumentException("Side deve ser 'long' ou 'short'");
 
         var ticker = request.Ticker.Trim().ToUpper();
+
+        // Cota de fundo nao tem preco na hora: entra por ordem de aplicacao/resgate, pela cota do dia
+        if (FundQuotas.IsFundTicker(ticker))
+            throw new InvalidOperationException(
+                "Cotas de fundos nao sao negociadas na hora: use a aplicacao/resgate (ordem executada pela cota do dia quando a CVM publicar)");
+
         var isTreasury = TesouroDireto.IsTreasuryTicker(ticker);
         if (isTreasury)
             await ValidateTreasuryTradeAsync(ticker, request);
@@ -164,9 +170,12 @@ public class TradeService
 
             var cashImpact = -(signedQuantity * price);
 
-            if (cash.Balance + cashImpact < 0)
-                throw new InvalidOperationException(
-                    $"Caixa insuficiente. Disponivel: {cash.Balance:N2}, necessario: {-cashImpact:N2}");
+            // Compras nao usam o caixa reservado para aplicacoes em fundos ainda nao cotizadas
+            var reserved = cashImpact < 0 ? await ReservedCashAsync(request.FundId) : 0;
+            if (cash.Balance - reserved + cashImpact < 0)
+                throw new InvalidOperationException(reserved > 0
+                    ? $"Caixa insuficiente. Disponivel: {cash.Balance - reserved:N2} ({reserved:N2} reservado para aplicacoes em fundos), necessario: {-cashImpact:N2}"
+                    : $"Caixa insuficiente. Disponivel: {cash.Balance:N2}, necessario: {-cashImpact:N2}");
 
             // Comprado + vendido: o fundo nao pode ficar exposto em mais que 200% do patrimonio
             await EnsureGrossLimitAsync(request.FundId, ticker, signedQuantity, price, cash.Balance);
@@ -242,16 +251,18 @@ public class TradeService
     /// <summary>
     /// Recusa a ordem que aumentaria a exposicao bruta do fundo (comprado + vendido) alem de MaxGrossExposure
     /// do patrimonio. Mesma avaliacao do limite de venda: o ativo negociado no preco da execucao, as demais
-    /// posicoes no ultimo preco do batch; o trade em si nao muda o patrimonio.
+    /// posicoes no ultimo preco do batch; o trade em si nao muda o patrimonio. Aplicacoes em fundos pendentes
+    /// contam como exposicao (viram posicao comprada na cotizacao).
     /// </summary>
-    private async Task EnsureGrossLimitAsync(int fundId, string ticker, double signedQuantity, double price, double cash)
+    internal async Task EnsureGrossLimitAsync(int fundId, string ticker, double signedQuantity, double price, double cash)
     {
         var positions = await _db.Positions.AsNoTracking().Where(p => p.FundId == fundId).ToListAsync();
         var current = positions.FirstOrDefault(p => p.Ticker == ticker)?.Quantity ?? 0;
         var others = positions.Where(p => p.Ticker != ticker).ToList();
 
         var equity = cash + current * price + others.Sum(p => p.Quantity * (p.CurrentPrice ?? p.AvgPrice));
-        var otherGross = others.Sum(p => Math.Abs(p.Quantity) * (p.CurrentPrice ?? p.AvgPrice));
+        var otherGross = others.Sum(p => Math.Abs(p.Quantity) * (p.CurrentPrice ?? p.AvgPrice))
+            + await ReservedCashAsync(fundId);
         var grossBefore = otherGross + Math.Abs(current) * price;
         var grossAfter = otherGross + Math.Abs(current + signedQuantity) * price;
 
@@ -282,6 +293,7 @@ public class TradeService
         var cash = (await _db.Cash.AsNoTracking().FirstOrDefaultAsync(c => c.FundId == fundId))?.Balance ?? 0;
         var positions = await _db.Positions.AsNoTracking().Where(p => p.FundId == fundId).ToListAsync();
         var others = positions.Where(p => p.Ticker != ticker).ToList();
+        var reserved = await ReservedCashAsync(fundId);
 
         return new TradeLimitsResponse(
             MaxShortExposure,
@@ -290,8 +302,18 @@ public class TradeService
             others.Where(p => p.Quantity < 0).Sum(p => -p.Quantity * (p.CurrentPrice ?? p.AvgPrice)),
             positions.FirstOrDefault(p => p.Ticker == ticker)?.Quantity ?? 0,
             MaxGrossExposure,
-            others.Sum(p => Math.Abs(p.Quantity) * (p.CurrentPrice ?? p.AvgPrice)));
+            others.Sum(p => Math.Abs(p.Quantity) * (p.CurrentPrice ?? p.AvgPrice)) + reserved,
+            reserved);
     }
+
+    /// <summary>
+    /// Caixa reservado para aplicacoes em fundos pendentes (ainda nao cotizadas): continua no caixa do fundo
+    /// (e no patrimonio), mas nao pode ser usado em compras nem em outras aplicacoes.
+    /// </summary>
+    public async Task<double> ReservedCashAsync(int fundId) =>
+        await _db.FundOrders
+            .Where(o => o.FundId == fundId && o.Status == FundOrderStatus.Pending && o.Side == "long")
+            .SumAsync(o => o.Amount) ?? 0;
 
     private async Task ValidateTreasuryTradeAsync(string ticker, ExecuteTradeRequest request)
     {
@@ -349,6 +371,16 @@ public class TradeService
             await using var transaction = await _db.Database.BeginTransactionAsync();
 
             _db.Trades.Remove(trade);
+
+            // Ordem de fundo executada por este trade: fica registrada como cancelada (a posicao e desfeita)
+            var orders = await _db.FundOrders.Where(o => o.TradeId == tradeId).ToListAsync();
+            foreach (var order in orders)
+            {
+                order.Status = FundOrderStatus.Cancelled;
+                order.ResolvedAt = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss");
+                order.Message = "Trade da execucao excluido pelo lider";
+            }
+
             await _db.SaveChangesAsync();
 
             await RebuildFundAsync(trade.FundId);
@@ -435,7 +467,8 @@ public class TradeService
         await _db.SaveChangesAsync();
     }
 
-    private async Task UpdatePositionAsync(
+    /// <summary>Aplica um trade a posicao do fundo e registra o P&L realizado (nao salva).</summary>
+    internal async Task UpdatePositionAsync(
         int fundId,
         string ticker,
         double signedQuantity,

@@ -1,4 +1,4 @@
-import { fmtBRL, fmtMoney, fmtQty } from '../lib/format';
+import { fmtBRL, fmtMoney, fmtQty, fmtQuota, isFundTicker } from '../lib/format';
 import { del } from '../lib/api';
 
 // canDelete: so o lider apaga trades (correcao de boleta errada); gestores fecham posicoes
@@ -59,6 +59,11 @@ export default function TradesTable({ trades, onDelete, canDelete = false }) {
               </td>
               <td style={{ padding: '8px 10px', color: 'var(--text)', fontWeight: 600 }}>
                 {t.ticker}
+                {isFundTicker(t.ticker) && t.name && (
+                  <div style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 400, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.name}>
+                    {t.name}
+                  </div>
+                )}
               </td>
               <td style={{ padding: '8px 10px' }}>
                 <span
@@ -79,7 +84,7 @@ export default function TradesTable({ trades, onDelete, canDelete = false }) {
                 {fmtQty(t.quantity)}
               </td>
               <td style={{ padding: '8px 10px', color: 'var(--text)', textAlign: 'right' }}>
-                {fmtBRL(t.price)}
+                {isFundTicker(t.ticker) ? fmtQuota(t.price) : fmtBRL(t.price)}
                 {t.currency && t.currency !== 'BRL' && t.fxRate > 0 && (
                   <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>
                     {fmtMoney(t.price / t.fxRate, t.currency)}

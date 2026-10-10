@@ -22,6 +22,7 @@ public class AppDbContext : DbContext
     public DbSet<PositionHistory> PositionHistory => Set<PositionHistory>();
     public DbSet<Asset> Assets => Set<Asset>();
     public DbSet<TreasuryEvent> TreasuryEvents => Set<TreasuryEvent>();
+    public DbSet<FundOrder> FundOrders => Set<FundOrder>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -259,6 +260,32 @@ public class AppDbContext : DbContext
             e.Property(x => x.Total).HasColumnName("total");
             e.Property(x => x.CreatedAt).HasColumnName("created_at");
             e.HasIndex(x => new { x.FundId, x.Ticker, x.EventDate, x.Kind }).IsUnique();
+            e.HasOne<Fund>().WithMany().HasForeignKey(x => x.FundId);
+        });
+
+        // FundOrder (aplicacoes e resgates em cotas de fundos, executados pela cota do dia)
+        modelBuilder.Entity<FundOrder>(e =>
+        {
+            e.ToTable("fund_orders");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id");
+            e.Property(x => x.FundId).HasColumnName("fund_id");
+            e.Property(x => x.Ticker).HasColumnName("ticker").IsRequired();
+            e.Property(x => x.Side).HasColumnName("side").IsRequired();
+            e.Property(x => x.Amount).HasColumnName("amount");
+            e.Property(x => x.Quantity).HasColumnName("quantity");
+            e.Property(x => x.RedeemAll).HasColumnName("redeem_all");
+            e.Property(x => x.QuoteDate).HasColumnName("quote_date").IsRequired();
+            e.Property(x => x.Status).HasColumnName("status").IsRequired();
+            e.Property(x => x.Thesis).HasColumnName("thesis");
+            e.Property(x => x.CreatedBy).HasColumnName("created_by");
+            e.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+            e.Property(x => x.ResolvedAt).HasColumnName("resolved_at");
+            e.Property(x => x.Price).HasColumnName("price");
+            e.Property(x => x.PriceDate).HasColumnName("price_date");
+            e.Property(x => x.TradeId).HasColumnName("trade_id");
+            e.Property(x => x.Message).HasColumnName("message");
+            e.HasIndex(x => new { x.FundId, x.Status });
             e.HasOne<Fund>().WithMany().HasForeignKey(x => x.FundId);
         });
 

@@ -91,7 +91,7 @@ public class DividendService
                 .Concat(fundTrades
                     .Where(t => string.CompareOrdinal(FundLedger.DateOf(t.ExecutedAt), startIso) >= 0)
                     .Select(t => t.Ticker))
-                .Where(t => !TesouroDireto.IsTreasuryTicker(t))
+                .Where(t => !TesouroDireto.IsTreasuryTicker(t) && !FundQuotas.IsFundTicker(t))
                 .ToHashSet(StringComparer.Ordinal);
 
             if (tickers.Count > 0)

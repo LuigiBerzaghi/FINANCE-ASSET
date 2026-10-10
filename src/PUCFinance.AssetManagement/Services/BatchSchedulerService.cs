@@ -45,7 +45,7 @@ public class BatchSchedulerService : BackgroundService
             schedule = CronExpression.Parse(DefaultSchedule);
         }
 
-        var timeZone = BrazilTimeZone();
+        var timeZone = BrazilTime.Zone;
 
         try
         {
@@ -90,23 +90,5 @@ public class BatchSchedulerService : BackgroundService
         {
             _logger.LogError(ex, "Batch automatico ({Reason}) falhou", reason);
         }
-    }
-
-    /// <summary>Fuso de Brasilia; se o sistema nao tiver a base de fusos, UTC-3 fixo (sem horario de verao desde 2019).</summary>
-    private static TimeZoneInfo BrazilTimeZone()
-    {
-        foreach (var id in new[] { "America/Sao_Paulo", "E. South America Standard Time" })
-        {
-            try
-            {
-                return TimeZoneInfo.FindSystemTimeZoneById(id);
-            }
-            catch (Exception)
-            {
-                // tenta o proximo
-            }
-        }
-
-        return TimeZoneInfo.CreateCustomTimeZone("BRT", TimeSpan.FromHours(-3), "Brasilia", "BRT");
     }
 }

@@ -58,6 +58,7 @@ public class PricingService
     private readonly AppDbContext _db;
     private readonly YahooChartClient _yahoo;
     private readonly TesouroDiretoClient _tesouro;
+    private readonly CvmFundsClient _cvm;
     private readonly ILogger<PricingService> _logger;
     private readonly Dictionary<string, ResolvedTicker?> _resolveCache = new();
     private readonly Dictionary<string, (DateTime From, YahooChart? Chart)> _chartCache = new();
@@ -81,11 +82,17 @@ public class PricingService
         { "ILA", ("ILS", 100) },
     };
 
-    public PricingService(AppDbContext db, YahooChartClient yahoo, TesouroDiretoClient tesouro, ILogger<PricingService> logger)
+    public PricingService(
+        AppDbContext db,
+        YahooChartClient yahoo,
+        TesouroDiretoClient tesouro,
+        CvmFundsClient cvm,
+        ILogger<PricingService> logger)
     {
         _db = db;
         _yahoo = yahoo;
         _tesouro = tesouro;
+        _cvm = cvm;
         _logger = logger;
     }
 
@@ -126,8 +133,8 @@ public class PricingService
 
     private async Task<ResolvedTicker?> ResolveUncachedAsync(string ticker)
     {
-        // Titulos publicos: precificados pelo Tesouro Direto, em BRL
-        if (TesouroDireto.IsTreasuryTicker(ticker))
+        // Titulos publicos (Tesouro Direto) e cotas de fundos (CVM): em BRL, fora do Yahoo
+        if (TesouroDireto.IsTreasuryTicker(ticker) || FundQuotas.IsFundTicker(ticker))
             return new ResolvedTicker(ticker, BaseCurrency);
 
         var asset = await _db.Assets.AsNoTracking().FirstOrDefaultAsync(a => a.Ticker == ticker);
@@ -179,6 +186,15 @@ public class PricingService
         // Titulos publicos sao marcados pelo PU de venda (o que o fundo receberia hoje)
         if (TesouroDireto.IsTreasuryTicker(ticker))
             return await GetTreasuryQuoteAsync(ticker, "short");
+
+        // Cotas de fundos sao marcadas pela ultima cota publicada pela CVM (cerca de 2 dias uteis de atraso)
+        if (FundQuotas.IsFundTicker(ticker))
+        {
+            var fundQuote = await _cvm.GetLatestQuoteAsync(ticker);
+            return fundQuote is { Quota: > 0 }
+                ? new PriceQuote(fundQuote.Quota, BaseCurrency, 1, fundQuote.Quota)
+                : null;
+        }
 
         var resolved = await ResolveAsync(ticker);
         if (resolved == null)
@@ -254,6 +270,9 @@ public class PricingService
             return treasuryPoints.Count > 0 ? new DailySeries(treasuryPoints) : null;
         }
 
+        if (FundQuotas.IsFundTicker(ticker))
+            return await GetFundQuoteHistoryAsync(ticker, from);
+
         var resolved = await ResolveAsync(ticker);
         if (resolved == null)
             return null;
@@ -287,13 +306,34 @@ public class PricingService
     }
 
     /// <summary>
+    /// Cotas de um fundo por dia em que cada cota passou a ser conhecida (publicada pela CVM, ~2 dias uteis depois
+    /// da data da cota), para os dias passados ficarem marcados como foram no dia a dia (pela ultima cota publicada).
+    /// So busca a partir do primeiro trade do ativo: antes disso nenhum fundo tinha a cota.
+    /// </summary>
+    private async Task<DailySeries?> GetFundQuoteHistoryAsync(string ticker, DateTime from)
+    {
+        var firstTrade = await _db.Trades
+            .Where(t => t.Ticker == ticker)
+            .MinAsync(t => (string?)t.ExecutedAt);
+        var start = NavHistoryRebuilder.ParseDate(firstTrade)?.AddDays(-10);
+        if (start > from)
+            from = start.Value;
+
+        var quotes = await _cvm.GetHistoryAsync(ticker, from);
+        return quotes.Count > 0
+            ? new DailySeries(quotes.Select(q => new KeyValuePair<string, double>(FundQuotas.KnownOn(q.Date), q.Quota)))
+            : null;
+    }
+
+    /// <summary>
     /// Proventos em dinheiro (dividendos/JCP) com data ex a partir de <paramref name="from"/>, valor bruto por acao
     /// convertido para BRL pelo cambio da data ex. Titulos publicos nao tem (cupons sao do TreasuryService).
     /// Null se o ticker nao foi encontrado no Yahoo; proventos sem cambio ficam de fora (tenta no proximo batch).
     /// </summary>
     public async Task<List<DividendQuote>?> GetDividendsBrlAsync(string ticker, DateTime from)
     {
-        if (TesouroDireto.IsTreasuryTicker(ticker))
+        // Titulos publicos tem cupons (TreasuryService); cotas de fundos ja trazem os rendimentos na cota
+        if (TesouroDireto.IsTreasuryTicker(ticker) || FundQuotas.IsFundTicker(ticker))
             return new List<DividendQuote>();
 
         var resolved = await ResolveAsync(ticker);
@@ -329,13 +369,17 @@ public class PricingService
 
     /// <summary>
     /// Menor quantidade negociavel de um ativo, usada para converter um valor em BRL em quantidade:
-    /// titulos publicos em 0,01; criptomoedas em fracoes de 0,00000001; demais ativos em unidades inteiras.
+    /// titulos publicos em 0,01; criptomoedas e cotas de fundos em fracoes de 0,00000001; demais ativos em
+    /// unidades inteiras.
     /// </summary>
     public async Task<double> QuantityStepAsync(string ticker)
     {
         ticker = ticker.Trim().ToUpper();
         if (TesouroDireto.IsTreasuryTicker(ticker))
             return TesouroDireto.QuantityStep;
+
+        if (FundQuotas.IsFundTicker(ticker))
+            return FundQuotas.QuantityStep;
 
         var assetClass = await _db.Assets.AsNoTracking()
             .Where(a => a.Ticker == ticker)
