@@ -27,7 +27,7 @@ Não há projeto de testes nem linter configurado.
 
 ## Arquitetura
 
-**Deploy único.** O Dockerfile compila o app Vite, copia o `dist/` para o `wwwroot` do backend, e a API serve os arquivos via `UseStaticFiles` + `MapFallbackToFile("index.html")`. Destinos de deploy: Heroku (`heroku.yml`, container stack) e Railway (`railway.toml`). A variável de ambiente `PORT` define a porta.
+**Deploy único.** O Dockerfile compila o app Vite, copia o `dist/` para o `wwwroot` do backend, e a API serve os arquivos via `UseStaticFiles` + `MapFallbackToFile("index.html")`. Destinos de deploy: Heroku (`heroku.yml`, container stack) e Railway (`railway.toml`). A variável de ambiente `PORT` define a porta. O app usa o coletor de lixo de estação de trabalho (`ServerGarbageCollection=false` no `.csproj`): o de servidor, padrão do ASP.NET, segura memória por núcleo e, sem enxergar o limite do dyno, passava dos 512 MB do Heroku Basic com os dados da CVM carregados.
 
 **Seleção do banco de dados (`Program.cs`).** Usa Postgres se `POSTGRES_CONNECTION_STRING` ou `DATABASE_URL` (formato de URL do Heroku, convertido em string de conexão Npgsql) estiver definida; caso contrário, SQLite em `DATABASE_PATH`, ou `/data/pucfinance.db` no Railway, ou `database/pucfinance.db` localmente (a raiz do repositório é encontrada procurando por `database/schema.sql`). O código precisa funcionar nos dois bancos.
 

@@ -5,6 +5,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>PUCFinance.AssetManagement</RootNamespace>
+    <!-- Coletor de lixo de estacao de trabalho: o de servidor (padrao do ASP.NET) segura memoria por nucleo e,
+         sem enxergar o limite do dyno, passava dos 512 MB do Heroku Basic com os dados da CVM carregados -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
