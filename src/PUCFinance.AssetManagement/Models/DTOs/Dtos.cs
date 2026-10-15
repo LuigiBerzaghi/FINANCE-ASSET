@@ -176,7 +176,18 @@ public record PositionResponse(
     double? MarketValue,
     double? UnrealizedPnl,
     double? Weight,          // % do patrimônio
-    string? Name = null      // nome do ativo no catalogo (ex.: fundo da CVM)
+    string? Name = null,     // nome do ativo no catalogo (ex.: fundo da CVM)
+    double Income = 0,       // proventos/cupons desde a abertura da posicao (BRL; negativo = pago pelo vendido)
+    List<PositionIncomeResponse>? IncomeEvents = null
+);
+
+/// <summary>Provento (dividendo/JCP, na data ex) ou cupom (na data do pagamento) de uma posicao aberta.</summary>
+public record PositionIncomeResponse(
+    string Date,
+    string Kind,             // dividend | coupon
+    double AmountPerUnit,    // BRL bruto por acao/titulo
+    double Quantity,         // quantidade na vespera (vendido: negativa)
+    double Total             // BRL creditado no caixa (negativo = pago)
 );
 
 public record NavPointResponse(

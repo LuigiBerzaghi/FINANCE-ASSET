@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { get, post } from '../lib/api';
-import { fmtBRL, fmtBrasilia, fmtDate, fmtPct, fmtQty, fmtQuota, isFundTicker, parseDecimal, quantityForAmount } from '../lib/format';
+import { fmtBRL, fmtBrasilia, fmtDate, fmtPct, fmtQty, fmtQuota, fmtUnitBRL, isFundTicker, parseDecimal, quantityForAmount } from '../lib/format';
 import { COLORS, EstimateLine, EstimateNote, EstimateWarning, sideColor } from './Estimate';
 import { describeOrder } from './FundOrderForm';
 
@@ -12,8 +12,131 @@ const cols = [
   { key: 'currentPrice', label: 'Preço Atual', align: 'right', fmt: fmtBRL },
   { key: 'marketValue', label: 'Valor', align: 'right', fmt: fmtBRL },
   { key: 'unrealizedPnl', label: 'P&L', align: 'right', fmt: fmtBRL, color: true },
+  {
+    key: 'income',
+    label: 'Proventos',
+    align: 'right',
+    help: 'Dividendos/JCP (acoes) e cupons (titulos publicos) desde a abertura da posicao, ja creditados no caixa. '
+      + 'Nao entram no P&L: o preco cai na data do provento. Clique no valor para ver cada pagamento.',
+  },
   { key: 'weight', label: 'Peso', align: 'right', fmt: fmtPct },
 ];
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// Valor recebido (verde) ou pago pela posicao vendida (vermelho), com a quantidade de pagamentos embaixo.
+// Clicar abre o detalhe de cada pagamento abaixo da tabela.
+function IncomeCell({ position, open, onToggle }) {
+  const events = position.incomeEvents || [];
+  if (!events.length) {
+    return <span style={{ color: 'var(--text-dim)' }} title="Nenhum provento ou cupom desde a abertura da posicao">—</span>;
+  }
+
+  const paid = position.income < 0;
+  const coupon = events[0].kind === 'coupon';
+  const count = coupon ? plural(events.length, 'cupom', 'cupons') : plural(events.length, 'provento', 'proventos');
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      title={open ? 'Ocultar pagamentos' : 'Ver cada pagamento'}
+      style={{
+        background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', textAlign: 'right',
+        color: paid ? 'var(--red)' : 'var(--green)',
+      }}
+    >
+      <div style={{ textDecoration: 'underline dotted', textUnderlineOffset: 3, whiteSpace: 'nowrap' }}>{fmtBRL(position.income)}</div>
+      <div style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+        {count}{paid ? (events.length === 1 ? ' pago' : ' pagos') : ''} {open ? '▴' : '▾'}
+      </div>
+    </button>
+  );
+}
+
+const detailCell = { padding: '6px 10px', textAlign: 'right', whiteSpace: 'nowrap' };
+const detailHead = {
+  ...detailCell, color: 'var(--text-muted)', fontSize: 10, fontWeight: 500, textTransform: 'uppercase',
+  letterSpacing: '0.08em', borderBottom: '1px solid var(--border)', position: 'sticky', top: 0, background: 'var(--surface-alt)',
+};
+const detailFoot = { ...detailCell, position: 'sticky', bottom: 0, background: 'var(--surface-alt)', boxShadow: 'inset 0 1px 0 var(--border)' };
+
+// Cada provento (data ex) ou cupom (data do pagamento) da posicao atual: valor por unidade, quantidade na
+// vespera e total que entrou no caixa (negativo = pago pela posicao vendida). Mais recente primeiro.
+function IncomePanel({ position, onHide }) {
+  const events = [...(position.incomeEvents || [])].sort((a, b) => b.date.localeCompare(a.date));
+  const coupon = events[0]?.kind === 'coupon';
+  const paid = position.income < 0;
+  const unit = coupon ? 'titulo' : 'acao';
+  const name = position.name || position.ticker;
+  const totalColor = paid ? 'var(--red)' : 'var(--green)';
+
+  return (
+    <div style={{ marginTop: 12, padding: 14, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface-alt)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, color: 'var(--text)' }}>
+          {coupon ? 'Cupons' : 'Proventos (dividendos/JCP)'} de <strong>{name}</strong> desde a abertura da posicao:
+          {' '}<strong style={{ color: totalColor }}>{fmtBRL(Math.abs(position.income))}</strong>
+          {paid ? ' pagos pelo fundo (posicao vendida)' : ' recebidos, ja no caixa'}
+        </div>
+        <button type="button" onClick={onHide}
+          style={{
+            padding: '3px 10px', borderRadius: 3, border: '1px solid var(--border-focus)', background: 'transparent',
+            color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer',
+          }}>
+          Ocultar
+        </button>
+      </div>
+      {/* Acao com JCP mensal acumula muitas linhas: rola dentro do painel */}
+      <div style={{ overflow: 'auto', maxHeight: 320, marginTop: 10 }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={{ ...detailHead, textAlign: 'left' }}>{coupon ? 'Pagamento' : 'Data ex'}</th>
+              <th style={detailHead}>Valor por {unit}</th>
+              <th style={detailHead}>{coupon ? 'Titulos' : 'Acoes'}</th>
+              <th style={detailHead}>{paid ? 'Pago' : 'Recebido'}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((e, i) => (
+              <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ ...detailCell, textAlign: 'left', color: 'var(--text)' }}>{fmtDate(e.date)}</td>
+                <td style={{ ...detailCell, color: 'var(--text)' }}>{fmtUnitBRL(e.amountPerUnit)}</td>
+                <td style={{ ...detailCell, color: 'var(--text)' }}>{fmtQty(Math.abs(e.quantity))}</td>
+                <td style={{ ...detailCell, color: e.total < 0 ? 'var(--red)' : 'var(--green)' }}>{fmtBRL(e.total)}</td>
+              </tr>
+            ))}
+          </tbody>
+          {events.length > 1 && (
+            // Total fixo no rodape, visivel mesmo com a lista rolando
+            <tfoot>
+              <tr>
+                <td colSpan={3} style={{ ...detailFoot, textAlign: 'left', color: 'var(--text-muted)', fontWeight: 600 }}>Total</td>
+                <td style={{ ...detailFoot, color: totalColor, fontWeight: 700 }}>{fmtBRL(position.income)}</td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+      <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <EstimateNote>
+          {coupon
+            ? 'Juros brutos do titulo, creditados no caixa na data do pagamento para quem tinha o titulo na vespera. '
+              + 'O preco do titulo cai no pagamento, por isso o P&L da posicao nao mostra esse ganho.'
+            : 'Valor bruto (sem IR), creditado no caixa na data ex para quem tinha a acao no fechamento da vespera. '
+              + 'O preco da acao cai na data ex, por isso o P&L da posicao nao mostra esse ganho.'}
+        </EstimateNote>
+        {!coupon && (
+          <EstimateNote>Posicao vendida paga o provento a quem emprestou as acoes (debitado do caixa).</EstimateNote>
+        )}
+        <EstimateNote>
+          So conta a posicao atual: o que entrou antes de ela ser zerada ou invertida nao aparece aqui.
+        </EstimateNote>
+      </div>
+    </div>
+  );
+}
 
 const inputStyle = {
   background: 'var(--surface-alt)',
@@ -380,6 +503,7 @@ function FundRedeemPanel({ position, fundId, onCancel, onDone }) {
 export default function PositionsTable({ positions, fundId, onClosed }) {
   const [closing, setClosing] = useState(null);
   const [message, setMessage] = useState(null);
+  const [incomeOf, setIncomeOf] = useState(null);
   const canClose = Boolean(fundId);
 
   if (!positions?.length) {
@@ -391,6 +515,11 @@ export default function PositionsTable({ positions, fundId, onClosed }) {
     );
   }
 
+  // Detalhe de proventos aberto (some se a posicao deixar de existir apos recarregar)
+  const incomePosition = incomeOf ? positions.find((p) => p.ticker === incomeOf && p.incomeEvents?.length) : null;
+  const toggleIncome = (ticker) => setIncomeOf((current) => (current === ticker ? null : ticker));
+  const rowBackground = (p) => (incomePosition?.ticker === p.ticker ? 'var(--surface-alt)' : 'transparent');
+
   const done = (text) => {
     setClosing(null);
     setMessage(text);
@@ -400,101 +529,113 @@ export default function PositionsTable({ positions, fundId, onClosed }) {
   };
 
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-        <thead>
-          <tr>
-            {[...cols, ...(canClose ? [{ key: 'close', label: '', align: 'center' }] : [])].map((c) => (
-              <th
-                key={c.key}
-                style={{
-                  padding: '10px 12px',
-                  textAlign: c.align,
-                  color: 'var(--text-muted)',
-                  borderBottom: '1px solid var(--border)',
-                  fontSize: 10,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.08em',
-                  fontWeight: 500,
-                }}
-              >
-                {c.label}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {positions.map((p, i) => (
-            <tr
-              key={i}
-              style={{ borderBottom: '1px solid var(--border)' }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-alt)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-            >
-              {cols.map((c) => {
-                const val = p[c.key];
-                const isFund = isFundTicker(p.ticker);
-                let color = 'var(--text)';
-                if (c.color && val != null) color = val >= 0 ? 'var(--green)' : 'var(--red)';
-                if (c.key === 'side') color = val === 'long' ? 'var(--green)' : 'var(--red)';
-                // Cota de fundo: preco com as casas que a CVM publica e o nome do fundo abaixo do ticker
-                const fmt = isFund && (c.key === 'avgPrice' || c.key === 'currentPrice') ? fmtQuota : c.fmt;
-                let display = fmt ? fmt(val) : val;
-                if (c.key === 'ticker' && isFund && p.name) {
-                  display = (
-                    <>
-                      <div style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name}>{p.name}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{p.ticker}</div>
-                    </>
-                  );
-                }
-
-                return (
-                  <td key={c.key} style={{ padding: '10px 12px', textAlign: c.align, color }}>
-                    {c.key === 'side' ? (
-                      <span
-                        style={{
-                          padding: '2px 8px',
-                          borderRadius: 3,
-                          fontSize: 10,
-                          fontWeight: 600,
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.05em',
-                          background: val === 'long' ? 'var(--green-dim)' : 'var(--red-dim)',
-                          color: val === 'long' ? 'var(--green)' : 'var(--red)',
-                        }}
-                      >
-                        {val}
-                      </span>
-                    ) : (
-                      display
-                    )}
-                  </td>
-                );
-              })}
-              {canClose && (
-                <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                  <button
-                    onClick={() => { setMessage(null); setClosing(p); }}
-                    style={{
-                      padding: '3px 8px',
-                      borderRadius: 3,
-                      border: '1px solid var(--accent-solid)',
-                      background: 'transparent',
-                      color: 'var(--text)',
-                      fontSize: 10,
-                      cursor: 'pointer',
-                      fontWeight: 600,
-                    }}
-                  >
-                    {isFundTicker(p.ticker) ? 'Resgatar' : 'Fechar'}
-                  </button>
-                </td>
-              )}
+    <div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr>
+              {[...cols, ...(canClose ? [{ key: 'close', label: '', align: 'center' }] : [])].map((c) => (
+                <th
+                  key={c.key}
+                  style={{
+                    padding: '10px 12px',
+                    textAlign: c.align,
+                    color: 'var(--text-muted)',
+                    borderBottom: '1px solid var(--border)',
+                    fontSize: 10,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.08em',
+                    fontWeight: 500,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {c.help ? (
+                    <span title={c.help} style={{ cursor: 'help', textDecoration: 'underline dotted', textUnderlineOffset: 3 }}>
+                      {c.label} ⓘ
+                    </span>
+                  ) : c.label}
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {positions.map((p, i) => (
+              <tr
+                key={i}
+                style={{ borderBottom: '1px solid var(--border)', background: rowBackground(p) }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-alt)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = rowBackground(p))}
+              >
+                {cols.map((c) => {
+                  const val = p[c.key];
+                  const isFund = isFundTicker(p.ticker);
+                  let color = 'var(--text)';
+                  if (c.color && val != null) color = val >= 0 ? 'var(--green)' : 'var(--red)';
+                  if (c.key === 'side') color = val === 'long' ? 'var(--green)' : 'var(--red)';
+                  // Cota de fundo: preco com as casas que a CVM publica e o nome do fundo abaixo do ticker
+                  const fmt = isFund && (c.key === 'avgPrice' || c.key === 'currentPrice') ? fmtQuota : c.fmt;
+                  let display = fmt ? fmt(val) : val;
+                  if (c.key === 'ticker' && isFund && p.name) {
+                    display = (
+                      <>
+                        <div style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.name}>{p.name}</div>
+                        <div style={{ fontSize: 10, color: 'var(--text-dim)' }}>{p.ticker}</div>
+                      </>
+                    );
+                  }
+
+                  return (
+                    <td key={c.key} style={{ padding: '10px 12px', textAlign: c.align, color }}>
+                      {c.key === 'income' ? (
+                        <IncomeCell position={p} open={incomeOf === p.ticker} onToggle={() => toggleIncome(p.ticker)} />
+                      ) : c.key === 'side' ? (
+                        <span
+                          style={{
+                            padding: '2px 8px',
+                            borderRadius: 3,
+                            fontSize: 10,
+                            fontWeight: 600,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.05em',
+                            background: val === 'long' ? 'var(--green-dim)' : 'var(--red-dim)',
+                            color: val === 'long' ? 'var(--green)' : 'var(--red)',
+                          }}
+                        >
+                          {val}
+                        </span>
+                      ) : (
+                        display
+                      )}
+                    </td>
+                  );
+                })}
+                {canClose && (
+                  <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                    <button
+                      onClick={() => { setMessage(null); setClosing(p); }}
+                      style={{
+                        padding: '3px 8px',
+                        borderRadius: 3,
+                        border: '1px solid var(--accent-solid)',
+                        background: 'transparent',
+                        color: 'var(--text)',
+                        fontSize: 10,
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {isFundTicker(p.ticker) ? 'Resgatar' : 'Fechar'}
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {incomePosition && (
+        <IncomePanel key={incomePosition.ticker} position={incomePosition} onHide={() => setIncomeOf(null)} />
+      )}
       {closing && isFundTicker(closing.ticker) && (
         <FundRedeemPanel
           key={closing.ticker}

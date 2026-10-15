@@ -340,14 +340,10 @@ export default function App() {
               </Section>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '3fr 2fr', gap: 20 }}>
-              <Section title="Posicoes Abertas">
-                <PositionsTable positions={positions} fundId={activeFund} onClosed={() => { loadFunds(); loadFundData(); }} />
-              </Section>
-              <Section title="Metricas">
-                <MetricsPanel metrics={metrics} />
-              </Section>
-            </div>
+            {/* Largura toda: a tabela tem muitas colunas (proventos, peso, fechar) */}
+            <Section title="Posicoes Abertas">
+              <PositionsTable positions={positions} fundId={activeFund} onClosed={() => { loadFunds(); loadFundData(); }} />
+            </Section>
 
             {fundOrders.length > 0 && (
               <Section title="Ordens de Fundos (aplicacoes e resgates)">
@@ -355,22 +351,27 @@ export default function App() {
               </Section>
             )}
 
-            {allocationData.length > 0 && (
-              <Section title="Alocacao">
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={allocationData} layout="vertical" margin={{ left: 50 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-                    <XAxis type="number" tick={{ fill: 'var(--text-dim)', fontSize: 10 }} tickFormatter={(v) => `${v.toFixed(1)}%`} />
-                    <YAxis type="category" dataKey="name" tick={{ fill: 'var(--text)', fontSize: 12 }} width={60} />
-                    <Tooltip
-                      contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6 }}
-                      formatter={(v) => [`${v.toFixed(2)}%`, 'Peso']}
-                    />
-                    <Bar dataKey="value" fill="var(--bar-fill)" radius={[0, 4, 4, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+            <div style={{ display: 'grid', gridTemplateColumns: allocationData.length > 0 ? '1fr 1fr' : '1fr', gap: 20 }}>
+              <Section title="Metricas">
+                <MetricsPanel metrics={metrics} />
               </Section>
-            )}
+              {allocationData.length > 0 && (
+                <Section title="Alocacao">
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart data={allocationData} layout="vertical" margin={{ left: 50 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
+                      <XAxis type="number" tick={{ fill: 'var(--text-dim)', fontSize: 10 }} tickFormatter={(v) => `${v.toFixed(1)}%`} />
+                      <YAxis type="category" dataKey="name" tick={{ fill: 'var(--text)', fontSize: 12 }} width={60} />
+                      <Tooltip
+                        contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6 }}
+                        formatter={(v) => [`${v.toFixed(2)}%`, 'Peso']}
+                      />
+                      <Bar dataKey="value" fill="var(--bar-fill)" radius={[0, 4, 4, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </Section>
+              )}
+            </div>
 
             <Section title="Historico de Trades">
               <TradesTable trades={trades} canDelete={isLeader} onDelete={() => { loadFunds(); loadFundData(); }} />

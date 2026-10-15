@@ -1,6 +1,12 @@
 export const fmtBRL = (v) =>
   v != null ? v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—';
 
+// Valor por unidade com as casas que vierem (ate 6), ex.: provento de R$ 0,345678 por acao
+export const fmtUnitBRL = (v) =>
+  v != null
+    ? v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 6 })
+    : '—';
+
 export const fmtMoney = (v, currency = 'BRL') =>
   v != null ? v.toLocaleString('pt-BR', { style: 'currency', currency }) : '—';
 

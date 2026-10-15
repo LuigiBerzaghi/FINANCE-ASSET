@@ -5,6 +5,12 @@ namespace PUCFinance.AssetManagement.Services;
 /// <summary>P&L realizado por um trade ou por resgate no vencimento.</summary>
 public sealed record LedgerRealized(string Ticker, string ClosedAt, RealizedFill Fill);
 
+/// <summary>
+/// Cupom ou provento creditado (ou debitado, se vendido) para a posicao de um ativo: valor por unidade,
+/// quantidade com sinal na vespera e total (quantidade × valor por unidade, o mesmo que entra no caixa).
+/// </summary>
+public sealed record LedgerIncome(int EventId, string Date, string Kind, double AmountPerUnit, double Quantity, double Total);
+
 /// <summary>Resultado do replay: posicoes, caixa e quantidades de cada evento (cupom, resgate ou provento).</summary>
 public sealed class LedgerState
 {
@@ -17,6 +23,13 @@ public sealed class LedgerState
     /// (vendido negativo); em cupons/resgates e zero quando o fundo nao tinha o titulo.
     /// </summary>
     public Dictionary<int, double> EventQuantities { get; } = new();
+
+    /// <summary>
+    /// Cupons e proventos de cada posicao aberta desde que ela foi aberta (ticker → eventos em ordem).
+    /// Zerar ou inverter a posicao recomeca a lista: o que entrou antes ficou com a posicao anterior.
+    /// Reduzir sem zerar mantem a lista (o que ja entrou no caixa nao volta).
+    /// </summary>
+    public Dictionary<string, List<LedgerIncome>> Income { get; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -63,6 +76,8 @@ public static class FundLedger
             {
                 state.EventQuantities[ev.Id] = quantity;
                 state.Cash += quantity * ev.AmountPerUnit;
+                if (quantity != 0)
+                    AddIncome(state, ev, quantity);
                 continue;
             }
 
@@ -72,6 +87,8 @@ public static class FundLedger
                 continue;
 
             state.Cash += held * ev.AmountPerUnit;
+            if (ev.Kind == TreasuryEventKinds.Coupon)
+                AddIncome(state, ev, held);
 
             // Vencimento: o titulo e resgatado pelo valor do evento
             if (ev.Kind == TreasuryEventKinds.Maturity)
@@ -83,14 +100,27 @@ public static class FundLedger
 
     private static void Apply(LedgerState state, string ticker, double signed, double price, string side, string closedAt)
     {
-        var (next, realized) = PositionMath.Apply(state.Positions.GetValueOrDefault(ticker), signed, price, side);
+        var current = state.Positions.GetValueOrDefault(ticker);
+        var (next, realized) = PositionMath.Apply(current, signed, price, side);
         if (realized != null)
             state.Realized.Add(new LedgerRealized(ticker, closedAt, realized));
+
+        // Posicao nova, zerada ou invertida: cupons/proventos anteriores nao sao da posicao que fica
+        if (current == null || next == null || Math.Sign(next.Quantity) != Math.Sign(current.Quantity))
+            state.Income.Remove(ticker);
 
         if (next == null)
             state.Positions.Remove(ticker);
         else
             state.Positions[ticker] = next;
+    }
+
+    private static void AddIncome(LedgerState state, TreasuryEvent ev, double quantity)
+    {
+        if (!state.Income.TryGetValue(ev.Ticker, out var list))
+            state.Income[ev.Ticker] = list = new List<LedgerIncome>();
+
+        list.Add(new LedgerIncome(ev.Id, ev.EventDate, ev.Kind, ev.AmountPerUnit, quantity, quantity * ev.AmountPerUnit));
     }
 
     public static string DateOf(string timestamp) =>

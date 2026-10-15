@@ -60,7 +60,9 @@ public class ExportService
 
         // ── Posicoes ────────────────────────
         var wsPos = wb.AddWorksheet("Posicoes");
-        var posHeaders = new[] { "Ticker", "Side", "Quantidade", "Preco Medio", "Preco Atual", "Valor Mercado", "P&L Nao Realizado", "Peso %" };
+        // Proventos/cupons desde a abertura de cada posicao (ja no caixa), pelo mesmo replay que forma o caixa
+        var income = FundLedger.Replay(fund.InitialCapital, trades, treasuryEvents).Income;
+        var posHeaders = new[] { "Ticker", "Side", "Quantidade", "Preco Medio", "Preco Atual", "Valor Mercado", "P&L Nao Realizado", "Proventos (posicao atual)", "Peso %" };
         for (int i = 0; i < posHeaders.Length; i++)
         {
             wsPos.Cell(1, i + 1).Value = posHeaders[i];
@@ -77,7 +79,8 @@ public class ExportService
             wsPos.Cell(i + 2, 5).Value = p.CurrentPrice ?? 0;
             wsPos.Cell(i + 2, 6).Value = p.MarketValue ?? 0;
             wsPos.Cell(i + 2, 7).Value = p.UnrealizedPnl ?? 0;
-            wsPos.Cell(i + 2, 8).Value = totalEquity > 0 ? ((p.MarketValue ?? 0) / totalEquity * 100) : 0;
+            wsPos.Cell(i + 2, 8).Value = income.GetValueOrDefault(p.Ticker)?.Sum(e => e.Total) ?? 0;
+            wsPos.Cell(i + 2, 9).Value = totalEquity > 0 ? ((p.MarketValue ?? 0) / totalEquity * 100) : 0;
         }
         wsPos.Columns().AdjustToContents();
 
