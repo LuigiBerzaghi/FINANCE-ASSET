@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { get, post } from '../lib/api';
-import { fmtBRL, fmtBrasilia, fmtDate, fmtPct, fmtQty, fmtQuota, fmtUnitBRL, isFundTicker, parseDecimal, quantityForAmount } from '../lib/format';
+import { fmtBRL, fmtBrasilia, fmtDate, fmtPct, fmtPctSigned, fmtQty, fmtQuota, fmtUnitBRL, isFundTicker, parseDecimal, quantityForAmount } from '../lib/format';
 import { COLORS, EstimateLine, EstimateNote, EstimateWarning, sideColor } from './Estimate';
 import { describeOrder } from './FundOrderForm';
 
@@ -19,10 +19,70 @@ const cols = [
     help: 'Dividendos/JCP (acoes) e cupons (titulos publicos) desde a abertura da posicao, ja creditados no caixa. '
       + 'Nao entram no P&L: o preco cai na data do provento. Clique no valor para ver cada pagamento.',
   },
+  {
+    key: 'returnPct',
+    label: 'Rentab.',
+    align: 'right',
+    help: 'Rentabilidade da posicao sobre o preco medio: variacao do preco + proventos/cupons das acoes que estao na carteira. '
+      + 'Em venda parcial, as acoes vendidas levam a parte delas (como no preco medio). '
+      + 'Vendido ganha quando o preco cai e paga os proventos. Passe o mouse no valor para ver a conta.',
+  },
   { key: 'weight', label: 'Peso', align: 'right', fmt: fmtPct },
 ];
 
+const TREASURY_TICKER = /^[A-Z]+-[A-Z]{3}\d{4}$/;
+
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// Unidade da posicao nos textos, com a concordancia (titulo e masculino; acao e cota, femininos)
+const unitsOf = (ticker) => {
+  const fem = !TREASURY_TICKER.test(ticker);
+  return {
+    noun: TREASURY_TICKER.test(ticker) ? 'titulos' : isFundTicker(ticker) ? 'cotas' : 'acoes',
+    the: fem ? 'as' : 'os',
+    inThe: fem ? 'nas' : 'nos',
+    ofThe: fem ? 'das' : 'dos',
+    sold: fem ? 'vendidas' : 'vendidos',
+    ofThem: fem ? 'delas' : 'deles',
+  };
+};
+
+// Rentabilidade total (verde/vermelho) e, embaixo, quanto dela veio de proventos. A conta completa fica no title.
+function ReturnCell({ position: p }) {
+  if (p.returnPct == null) {
+    return <span style={{ color: 'var(--text-dim)' }} title="Sem custo para calcular a rentabilidade">—</span>;
+  }
+
+  const held = Math.abs(p.quantity);
+  const cost = held * p.avgPrice;
+  const isFund = isFundTicker(p.ticker);
+  const price = isFund ? fmtQuota : fmtBRL;
+  const units = unitsOf(p.ticker);
+  const hasIncome = Math.abs(p.heldIncome || 0) >= 0.005;
+  const lines = [
+    p.quantity < 0
+      ? `Preco: vendido a ${price(p.avgPrice)} (preco medio), hoje ${price(p.currentPrice ?? p.avgPrice)} = ${fmtPctSigned(p.priceReturnPct)}`
+      : `Preco: ${price(p.avgPrice)} (preco medio) → ${price(p.currentPrice ?? p.avgPrice)} = ${fmtPctSigned(p.priceReturnPct)}`,
+  ];
+  if (hasIncome) {
+    lines.push(`Proventos ${p.heldIncome < 0 ? 'pagos' : 'recebidos'}: ${fmtBRL(Math.abs(p.heldIncome))} ${units.inThe} ${fmtQty(held)} ${units.noun} em carteira = ${fmtPctSigned(p.incomeReturnPct)}`);
+    if (Math.abs((p.income || 0) - p.heldIncome) >= 0.005) {
+      lines.push(`  (de ${fmtBRL(Math.abs(p.income))} desde a abertura; o resto ficou com ${units.the} ${units.noun} ${units.sold})`);
+    }
+  }
+  lines.push(`Total: ${fmtPctSigned(p.returnPct)} sobre o custo de ${fmtBRL(cost)}`);
+
+  return (
+    <span title={lines.join('\n')} style={{ cursor: 'help', display: 'inline-block', textAlign: 'right' }}>
+      <div style={{ color: p.returnPct >= 0 ? 'var(--green)' : 'var(--red)', whiteSpace: 'nowrap' }}>{fmtPct(p.returnPct)}</div>
+      {hasIncome && (
+        <div style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap' }}>
+          {fmtPctSigned(p.incomeReturnPct)} de proventos
+        </div>
+      )}
+    </span>
+  );
+}
 
 // Valor recebido (verde) ou pago pela posicao vendida (vermelho), com a quantidade de pagamentos embaixo.
 // Clicar abre o detalhe de cada pagamento abaixo da tabela.
@@ -69,6 +129,7 @@ function IncomePanel({ position, onHide }) {
   const paid = position.income < 0;
   const unit = coupon ? 'titulo' : 'acao';
   const name = position.name || position.ticker;
+  const units = unitsOf(position.ticker);
   const totalColor = paid ? 'var(--red)' : 'var(--green)';
 
   return (
@@ -133,6 +194,12 @@ function IncomePanel({ position, onHide }) {
         <EstimateNote>
           So conta a posicao atual: o que entrou antes de ela ser zerada ou invertida nao aparece aqui.
         </EstimateNote>
+        {Math.abs((position.income || 0) - (position.heldIncome || 0)) >= 0.005 && (
+          <EstimateNote>
+            Na rentabilidade entram {fmtBRL(Math.abs(position.heldIncome))}: a parte {units.ofThe} {fmtQty(Math.abs(position.quantity))}
+            {' '}{units.noun} que continuam na carteira ({units.the} {units.sold} levaram a parte {units.ofThem}, como no preco medio).
+          </EstimateNote>
+        )}
       </div>
     </div>
   );
@@ -158,8 +225,6 @@ const labelStyle = {
   marginBottom: 4,
   display: 'block',
 };
-
-const TREASURY_TICKER = /^[A-Z]+-[A-Z]{3}\d{4}$/;
 
 const shortcutStyle = (disabled) => ({
   padding: '0 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent',
@@ -588,6 +653,8 @@ export default function PositionsTable({ positions, fundId, onClosed }) {
                     <td key={c.key} style={{ padding: '10px 12px', textAlign: c.align, color }}>
                       {c.key === 'income' ? (
                         <IncomeCell position={p} open={incomeOf === p.ticker} onToggle={() => toggleIncome(p.ticker)} />
+                      ) : c.key === 'returnPct' ? (
+                        <ReturnCell position={p} />
                       ) : c.key === 'side' ? (
                         <span
                           style={{

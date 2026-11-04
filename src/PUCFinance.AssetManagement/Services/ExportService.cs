@@ -60,9 +60,10 @@ public class ExportService
 
         // ── Posicoes ────────────────────────
         var wsPos = wb.AddWorksheet("Posicoes");
-        // Proventos/cupons desde a abertura de cada posicao (ja no caixa), pelo mesmo replay que forma o caixa
-        var income = FundLedger.Replay(fund.InitialCapital, trades, treasuryEvents).Income;
-        var posHeaders = new[] { "Ticker", "Side", "Quantidade", "Preco Medio", "Preco Atual", "Valor Mercado", "P&L Nao Realizado", "Proventos (posicao atual)", "Peso %" };
+        // Proventos/cupons desde a abertura de cada posicao (ja no caixa), pelo mesmo replay que forma o caixa,
+        // e rentabilidade da posicao (preco + proventos das unidades em carteira), igual a da tela
+        var ledger = FundLedger.Replay(fund.InitialCapital, trades, treasuryEvents);
+        var posHeaders = new[] { "Ticker", "Side", "Quantidade", "Preco Medio", "Preco Atual", "Valor Mercado", "P&L Nao Realizado", "Proventos (posicao atual)", "Rentabilidade %", "Peso %" };
         for (int i = 0; i < posHeaders.Length; i++)
         {
             wsPos.Cell(1, i + 1).Value = posHeaders[i];
@@ -79,8 +80,11 @@ public class ExportService
             wsPos.Cell(i + 2, 5).Value = p.CurrentPrice ?? 0;
             wsPos.Cell(i + 2, 6).Value = p.MarketValue ?? 0;
             wsPos.Cell(i + 2, 7).Value = p.UnrealizedPnl ?? 0;
-            wsPos.Cell(i + 2, 8).Value = income.GetValueOrDefault(p.Ticker)?.Sum(e => e.Total) ?? 0;
-            wsPos.Cell(i + 2, 9).Value = totalEquity > 0 ? ((p.MarketValue ?? 0) / totalEquity * 100) : 0;
+            wsPos.Cell(i + 2, 8).Value = ledger.Income.GetValueOrDefault(p.Ticker)?.Sum(e => e.Total) ?? 0;
+            var returns = PositionMath.Return(p.Quantity, p.AvgPrice, p.UnrealizedPnl ?? 0, ledger.HeldIncome.GetValueOrDefault(p.Ticker));
+            if (returns != null)
+                wsPos.Cell(i + 2, 9).Value = returns.Total * 100;
+            wsPos.Cell(i + 2, 10).Value = totalEquity > 0 ? ((p.MarketValue ?? 0) / totalEquity * 100) : 0;
         }
         wsPos.Columns().AdjustToContents();
 

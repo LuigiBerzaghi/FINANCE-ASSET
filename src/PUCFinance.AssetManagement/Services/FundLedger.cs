@@ -30,6 +30,13 @@ public sealed class LedgerState
     /// Reduzir sem zerar mantem a lista (o que ja entrou no caixa nao volta).
     /// </summary>
     public Dictionary<string, List<LedgerIncome>> Income { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Parte dos cupons/proventos da posicao atual que pertence as unidades ainda em carteira (ticker → BRL).
+    /// Igual a soma de Income enquanto a posicao so cresce; reduzir leva a parte das unidades que sairam,
+    /// como o custo no preco medio (vender 40% da posicao leva 40% do que ja entrou). Base da rentabilidade.
+    /// </summary>
+    public Dictionary<string, double> HeldIncome { get; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -107,7 +114,15 @@ public static class FundLedger
 
         // Posicao nova, zerada ou invertida: cupons/proventos anteriores nao sao da posicao que fica
         if (current == null || next == null || Math.Sign(next.Quantity) != Math.Sign(current.Quantity))
+        {
             state.Income.Remove(ticker);
+            state.HeldIncome.Remove(ticker);
+        }
+        // Reducao: as unidades que sairam levam a sua parte (proporcional), como o custo no preco medio
+        else if (Math.Abs(next.Quantity) < Math.Abs(current.Quantity) && state.HeldIncome.TryGetValue(ticker, out var held))
+        {
+            state.HeldIncome[ticker] = held * Math.Abs(next.Quantity) / Math.Abs(current.Quantity);
+        }
 
         if (next == null)
             state.Positions.Remove(ticker);
@@ -120,7 +135,9 @@ public static class FundLedger
         if (!state.Income.TryGetValue(ev.Ticker, out var list))
             state.Income[ev.Ticker] = list = new List<LedgerIncome>();
 
-        list.Add(new LedgerIncome(ev.Id, ev.EventDate, ev.Kind, ev.AmountPerUnit, quantity, quantity * ev.AmountPerUnit));
+        var total = quantity * ev.AmountPerUnit;
+        list.Add(new LedgerIncome(ev.Id, ev.EventDate, ev.Kind, ev.AmountPerUnit, quantity, total));
+        state.HeldIncome[ev.Ticker] = state.HeldIncome.GetValueOrDefault(ev.Ticker) + total;
     }
 
     public static string DateOf(string timestamp) =>

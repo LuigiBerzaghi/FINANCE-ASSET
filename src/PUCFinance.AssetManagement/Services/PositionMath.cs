@@ -7,6 +7,12 @@ public sealed record PositionState(double Quantity, double AvgPrice, string Side
 public sealed record RealizedFill(double Quantity, double EntryPrice, double ExitPrice, double Pnl, string Side);
 
 /// <summary>
+/// Rentabilidade de uma posicao aberta sobre o custo: Price = variacao do preco, Income = cupons/proventos
+/// das unidades em carteira, Total = soma. Fracoes (0,1 = 10%).
+/// </summary>
+public sealed record PositionReturn(double Price, double Income, double Total);
+
+/// <summary>
 /// Regras de atualizacao de posicao por trade, sem acesso a banco. Usado na execucao de trades,
 /// na reconstrucao de posicoes e na reconstrucao do historico de NAV.
 /// </summary>
@@ -56,5 +62,21 @@ public static class PositionMath
             return (current with { Quantity = newQuantity }, realized);
 
         return (new PositionState(newQuantity, price, newQuantity > 0 ? "long" : "short"), realized);
+    }
+
+    /// <summary>
+    /// Rentabilidade da posicao atual sobre o custo (|quantidade| × preco medio): P&L nao realizado (vendido
+    /// ganha quando o preco cai) mais os cupons/proventos das unidades em carteira (LedgerState.HeldIncome;
+    /// vendido paga, entao entram negativos). Null sem custo.
+    /// </summary>
+    public static PositionReturn? Return(double quantity, double avgPrice, double unrealizedPnl, double heldIncome)
+    {
+        var cost = Math.Abs(quantity) * avgPrice;
+        if (!(cost > 0))
+            return null;
+
+        var price = unrealizedPnl / cost;
+        var income = heldIncome / cost;
+        return new PositionReturn(price, income, price + income);
     }
 }

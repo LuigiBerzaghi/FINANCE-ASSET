@@ -13,6 +13,10 @@ export const fmtMoney = (v, currency = 'BRL') =>
 export const fmtPct = (v) =>
   v != null ? `${(v * 100).toFixed(2)}%` : '—';
 
+// Percentual com sinal, para parcelas que somam (ex.: +9.73% de proventos)
+export const fmtPctSigned = (v) =>
+  v != null ? `${v > 0 ? '+' : ''}${fmtPct(v)}` : '—';
+
 export const fmtNum = (v, d = 4) =>
   v != null ? v.toFixed(d) : '—';
 
