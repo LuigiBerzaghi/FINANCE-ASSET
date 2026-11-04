@@ -258,19 +258,45 @@ public class FundsController : ControllerBase
             .Where(a => tickers.Contains(a.Ticker))
             .ToDictionaryAsync(a => a.Ticker, a => a.Name);
 
-        var result = snapshot.Positions.Select(p => new PositionResponse(
-            Ticker: p.Ticker,
-            Side: p.Side,
-            Quantity: p.Quantity,
-            AvgPrice: p.AvgPrice,
-            CurrentPrice: p.CurrentPrice,
-            MarketValue: CurrentMarketValue(p),
-            UnrealizedPnl: CurrentUnrealizedPnl(p),
-            Weight: snapshot.TotalEquity > 0 ? CurrentMarketValue(p) / snapshot.TotalEquity : null,
-            Name: names.GetValueOrDefault(p.Ticker)
-        )).ToList();
+        // Proventos e cupons de cada posicao desde que foi aberta, pelo mesmo replay que forma o caixa
+        var ledger = await ReplayFundAsync(fund);
+
+        var result = snapshot.Positions.Select(p =>
+        {
+            var received = ledger.Income.GetValueOrDefault(p.Ticker) ?? new List<LedgerIncome>();
+            var heldIncome = ledger.HeldIncome.GetValueOrDefault(p.Ticker);
+            var unrealizedPnl = CurrentUnrealizedPnl(p);
+            var returns = PositionMath.Return(p.Quantity, p.AvgPrice, unrealizedPnl, heldIncome);
+            return new PositionResponse(
+                Ticker: p.Ticker,
+                Side: p.Side,
+                Quantity: p.Quantity,
+                AvgPrice: p.AvgPrice,
+                CurrentPrice: p.CurrentPrice,
+                MarketValue: CurrentMarketValue(p),
+                UnrealizedPnl: unrealizedPnl,
+                Weight: snapshot.TotalEquity > 0 ? CurrentMarketValue(p) / snapshot.TotalEquity : null,
+                Name: names.GetValueOrDefault(p.Ticker),
+                Income: received.Sum(e => e.Total),
+                IncomeEvents: received
+                    .Select(e => new PositionIncomeResponse(e.Date, e.Kind, e.AmountPerUnit, e.Quantity, e.Total))
+                    .ToList(),
+                HeldIncome: heldIncome,
+                ReturnPct: returns?.Total,
+                PriceReturnPct: returns?.Price,
+                IncomeReturnPct: returns?.Income
+            );
+        }).ToList();
 
         return Ok(result);
+    }
+
+    /// <summary>Replay de trades e eventos do fundo (proventos por posicao; caixa e posicoes iguais aos gravados).</summary>
+    private async Task<LedgerState> ReplayFundAsync(Fund fund)
+    {
+        var trades = await _db.Trades.Where(t => t.FundId == fund.Id).ToListAsync();
+        var events = await _db.TreasuryEvents.Where(e => e.FundId == fund.Id).ToListAsync();
+        return FundLedger.Replay(fund.InitialCapital, trades, events);
     }
 
     /// <summary>GET /api/funds/{id}/members - Lista membros do time do fundo</summary>
@@ -374,6 +400,7 @@ public class FundsController : ControllerBase
 
         var snapshot = await GetRealtimeSnapshotAsync(id, fund);
         var positions = snapshot.Positions;
+        var ledger = await ReplayFundAsync(fund);
 
         var result = new List<AssetPerformanceResponse>();
 
@@ -393,8 +420,10 @@ public class FundsController : ControllerBase
             var marketValue = CurrentMarketValue(pos);
             var unrealizedPnl = CurrentUnrealizedPnl(pos);
             var totalPnl = unrealizedPnl + realizedTotal;
-            var costBasis = Math.Abs(pos.Quantity) * pos.AvgPrice;
-            double? returnPct = costBasis > 0 ? totalPnl / costBasis : null;
+            // Mesma rentabilidade da tabela de posicoes: posicao atual, com os proventos das unidades em carteira
+            // (o P&L realizado e de unidades que ja sairam, entao nao entra sobre o custo das que ficaram)
+            var returnPct = PositionMath.Return(
+                pos.Quantity, pos.AvgPrice, unrealizedPnl, ledger.HeldIncome.GetValueOrDefault(pos.Ticker))?.Total;
             var weight = snapshot.TotalEquity > 0 ? marketValue / snapshot.TotalEquity : 0;
 
             var dailyHistory = await _db.PositionHistory

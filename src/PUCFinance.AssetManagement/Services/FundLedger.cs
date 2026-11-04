@@ -5,6 +5,12 @@ namespace PUCFinance.AssetManagement.Services;
 /// <summary>P&L realizado por um trade ou por resgate no vencimento.</summary>
 public sealed record LedgerRealized(string Ticker, string ClosedAt, RealizedFill Fill);
 
+/// <summary>
+/// Cupom ou provento creditado (ou debitado, se vendido) para a posicao de um ativo: valor por unidade,
+/// quantidade com sinal na vespera e total (quantidade × valor por unidade, o mesmo que entra no caixa).
+/// </summary>
+public sealed record LedgerIncome(int EventId, string Date, string Kind, double AmountPerUnit, double Quantity, double Total);
+
 /// <summary>Resultado do replay: posicoes, caixa e quantidades de cada evento (cupom, resgate ou provento).</summary>
 public sealed class LedgerState
 {
@@ -17,6 +23,20 @@ public sealed class LedgerState
     /// (vendido negativo); em cupons/resgates e zero quando o fundo nao tinha o titulo.
     /// </summary>
     public Dictionary<int, double> EventQuantities { get; } = new();
+
+    /// <summary>
+    /// Cupons e proventos de cada posicao aberta desde que ela foi aberta (ticker → eventos em ordem).
+    /// Zerar ou inverter a posicao recomeca a lista: o que entrou antes ficou com a posicao anterior.
+    /// Reduzir sem zerar mantem a lista (o que ja entrou no caixa nao volta).
+    /// </summary>
+    public Dictionary<string, List<LedgerIncome>> Income { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Parte dos cupons/proventos da posicao atual que pertence as unidades ainda em carteira (ticker → BRL).
+    /// Igual a soma de Income enquanto a posicao so cresce; reduzir leva a parte das unidades que sairam,
+    /// como o custo no preco medio (vender 40% da posicao leva 40% do que ja entrou). Base da rentabilidade.
+    /// </summary>
+    public Dictionary<string, double> HeldIncome { get; } = new(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -63,6 +83,8 @@ public static class FundLedger
             {
                 state.EventQuantities[ev.Id] = quantity;
                 state.Cash += quantity * ev.AmountPerUnit;
+                if (quantity != 0)
+                    AddIncome(state, ev, quantity);
                 continue;
             }
 
@@ -72,6 +94,8 @@ public static class FundLedger
                 continue;
 
             state.Cash += held * ev.AmountPerUnit;
+            if (ev.Kind == TreasuryEventKinds.Coupon)
+                AddIncome(state, ev, held);
 
             // Vencimento: o titulo e resgatado pelo valor do evento
             if (ev.Kind == TreasuryEventKinds.Maturity)
@@ -83,14 +107,37 @@ public static class FundLedger
 
     private static void Apply(LedgerState state, string ticker, double signed, double price, string side, string closedAt)
     {
-        var (next, realized) = PositionMath.Apply(state.Positions.GetValueOrDefault(ticker), signed, price, side);
+        var current = state.Positions.GetValueOrDefault(ticker);
+        var (next, realized) = PositionMath.Apply(current, signed, price, side);
         if (realized != null)
             state.Realized.Add(new LedgerRealized(ticker, closedAt, realized));
+
+        // Posicao nova, zerada ou invertida: cupons/proventos anteriores nao sao da posicao que fica
+        if (current == null || next == null || Math.Sign(next.Quantity) != Math.Sign(current.Quantity))
+        {
+            state.Income.Remove(ticker);
+            state.HeldIncome.Remove(ticker);
+        }
+        // Reducao: as unidades que sairam levam a sua parte (proporcional), como o custo no preco medio
+        else if (Math.Abs(next.Quantity) < Math.Abs(current.Quantity) && state.HeldIncome.TryGetValue(ticker, out var held))
+        {
+            state.HeldIncome[ticker] = held * Math.Abs(next.Quantity) / Math.Abs(current.Quantity);
+        }
 
         if (next == null)
             state.Positions.Remove(ticker);
         else
             state.Positions[ticker] = next;
+    }
+
+    private static void AddIncome(LedgerState state, TreasuryEvent ev, double quantity)
+    {
+        if (!state.Income.TryGetValue(ev.Ticker, out var list))
+            state.Income[ev.Ticker] = list = new List<LedgerIncome>();
+
+        var total = quantity * ev.AmountPerUnit;
+        list.Add(new LedgerIncome(ev.Id, ev.EventDate, ev.Kind, ev.AmountPerUnit, quantity, total));
+        state.HeldIncome[ev.Ticker] = state.HeldIncome.GetValueOrDefault(ev.Ticker) + total;
     }
 
     public static string DateOf(string timestamp) =>

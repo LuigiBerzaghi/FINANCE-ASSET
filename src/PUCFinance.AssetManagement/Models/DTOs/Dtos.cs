@@ -176,7 +176,22 @@ public record PositionResponse(
     double? MarketValue,
     double? UnrealizedPnl,
     double? Weight,          // % do patrimônio
-    string? Name = null      // nome do ativo no catalogo (ex.: fundo da CVM)
+    string? Name = null,     // nome do ativo no catalogo (ex.: fundo da CVM)
+    double Income = 0,       // proventos/cupons desde a abertura da posicao (BRL; negativo = pago pelo vendido)
+    List<PositionIncomeResponse>? IncomeEvents = null,
+    double HeldIncome = 0,   // parte de Income das unidades ainda em carteira (venda parcial leva a parte das vendidas)
+    double? ReturnPct = null,       // rentabilidade da posicao sobre o custo: PriceReturnPct + IncomeReturnPct
+    double? PriceReturnPct = null,  // P&L nao realizado / custo (|qtd| × preco medio)
+    double? IncomeReturnPct = null  // HeldIncome / custo
+);
+
+/// <summary>Provento (dividendo/JCP, na data ex) ou cupom (na data do pagamento) de uma posicao aberta.</summary>
+public record PositionIncomeResponse(
+    string Date,
+    string Kind,             // dividend | coupon
+    double AmountPerUnit,    // BRL bruto por acao/titulo
+    double Quantity,         // quantidade na vespera (vendido: negativa)
+    double Total             // BRL creditado no caixa (negativo = pago)
 );
 
 public record NavPointResponse(
@@ -235,7 +250,7 @@ public record AssetPerformanceResponse(
     double? UnrealizedPnl,
     double RealizedPnl,
     double TotalPnl,
-    double? ReturnPct,          // retorno % total
+    double? ReturnPct,          // rentabilidade da posicao atual com proventos (igual a PositionResponse.ReturnPct)
     double? Weight,             // peso atual no fundo
     double? Contribution,       // contribuicao ao retorno do fundo (soma)
     List<AssetDailyPoint> DailyHistory

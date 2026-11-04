@@ -1,11 +1,21 @@
 export const fmtBRL = (v) =>
   v != null ? v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : '—';
 
+// Valor por unidade com as casas que vierem (ate 6), ex.: provento de R$ 0,345678 por acao
+export const fmtUnitBRL = (v) =>
+  v != null
+    ? v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 6 })
+    : '—';
+
 export const fmtMoney = (v, currency = 'BRL') =>
   v != null ? v.toLocaleString('pt-BR', { style: 'currency', currency }) : '—';
 
 export const fmtPct = (v) =>
   v != null ? `${(v * 100).toFixed(2)}%` : '—';
+
+// Percentual com sinal, para parcelas que somam (ex.: +9.73% de proventos)
+export const fmtPctSigned = (v) =>
+  v != null ? `${v > 0 ? '+' : ''}${fmtPct(v)}` : '—';
 
 export const fmtNum = (v, d = 4) =>
   v != null ? v.toFixed(d) : '—';
